@@ -28,15 +28,19 @@ cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
 Copy-Item "$wdk\Include\$sdkVersion\km\hidport.h" $obj
 
 $minor = $umdfVersion.Split('.')[1]
-& cl /nologo /W4 /O2 /MT /LD /std:c17 `
-    /D UMDF_VERSION_MAJOR=2 /D UMDF_VERSION_MINOR=$minor /D UMDF_USING_NTSTATUS `
-    /D UNICODE /D _UNICODE /D _WIN32_WINNT=0x0A00 `
-    /I "$wdk\Include\wdf\umdf\$umdfVersion" /I $obj `
-    /Fo"$obj\\" /Fe"$pkg\winstadia.dll" "$PSScriptRoot\winstadia.c" `
-    /link /NOIMPLIB /NOEXP "$wdk\Lib\wdf\umdf\x64\$umdfVersion\WdfDriverStubUm.lib" ntdll.lib
-if ($LASTEXITCODE) { throw 'compilation failed' }
-
-Copy-Item "$PSScriptRoot\winstadia.inf" $pkg
+# Source file -> driver name (DLL and INF share it).
+$drivers = @{ 'winstadia.c' = 'winstadia'; 'hide.c' = 'winstadiahide' }
+foreach ($source in $drivers.Keys) {
+    $name = $drivers[$source]
+    & cl /nologo /W4 /O2 /MT /LD /std:c17 `
+        /D UMDF_VERSION_MAJOR=2 /D UMDF_VERSION_MINOR=$minor /D UMDF_USING_NTSTATUS `
+        /D UNICODE /D _UNICODE /D _WIN32_WINNT=0x0A00 `
+        /I "$wdk\Include\wdf\umdf\$umdfVersion" /I $obj `
+        /Fo"$obj\\" /Fe"$pkg\$name.dll" "$PSScriptRoot\$source" `
+        /link /NOIMPLIB /NOEXP "$wdk\Lib\wdf\umdf\x64\$umdfVersion\WdfDriverStubUm.lib" ntdll.lib
+    if ($LASTEXITCODE) { throw "compiling $source failed" }
+    Copy-Item "$PSScriptRoot\$name.inf" $pkg
+}
 & "$wdk\bin\$sdkVersion\x86\Inf2Cat.exe" /driver:$pkg /os:10_X64 /uselocaltime
 if ($LASTEXITCODE) { throw 'Inf2Cat failed' }
 
@@ -48,7 +52,7 @@ if (-not $cert) {
 }
 Export-Certificate -Cert $cert -FilePath "$out\winstadia.cer" | Out-Null
 
-& signtool sign /q /fd SHA256 /sha1 $cert.Thumbprint "$pkg\winstadia.dll" "$pkg\winstadia.cat"
+& signtool sign /q /fd SHA256 /sha1 $cert.Thumbprint (Get-ChildItem $pkg -Include *.dll, *.cat -Recurse).FullName
 if ($LASTEXITCODE) { throw 'signing failed' }
 
 Write-Host "Driver package ready: $pkg"

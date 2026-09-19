@@ -1,0 +1,69 @@
+; Upper filter (UMDF2) that hides the physical Stadia controller from games.
+; The HID collection stays a raw device as with input.inf, plus the filter.
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=HIDClass
+ClassGuid={745a17a0-74d3-11d0-b6fe-00a0c90f57da}
+Provider=%Provider%
+DriverVer=09/19/2026,1.0.0.0
+CatalogFile=winstadiahide.cat
+PnpLockdown=1
+
+[DestinationDirs]
+DefaultDestDir=13
+
+[SourceDisksNames]
+1=%DiskName%
+
+[SourceDisksFiles]
+winstadiahide.dll=1
+
+[Manufacturer]
+%Provider%=Devices,NTamd64.10.0...22000
+
+; USB, then Bluetooth LE (HID over GATT).
+[Devices.NTamd64.10.0...22000]
+%DeviceDesc%=Install,HID\VID_18D1&PID_9400&MI_01
+%DeviceDesc%=Install,HID\{00001812-0000-1000-8000-00805f9b34fb}_Dev_VID&0218D1_PID&9400
+
+[Install.NT]
+CopyFiles=DriverCopy
+Include=input.inf
+Needs=HID_Raw_Inst.NT
+Include=WUDFRD.inf
+Needs=WUDFRD_UpperFilter.NT
+
+[Install.NT.hw]
+Include=WUDFRD.inf
+Needs=WUDFRD_UpperFilter.NT.hw
+
+[Install.NT.Services]
+Include=input.inf
+Needs=HID_Raw_Inst.NT.Services
+Include=WUDFRD.inf
+Needs=WUDFRD_UpperFilter.NT.Services
+
+[Install.NT.Filters]
+Include=WUDFRD.inf
+Needs=WUDFRD_UpperFilter.NT.Filters
+
+[Install.NT.Wdf]
+UmdfService="winstadiahide",UmdfInstall
+UmdfServiceOrder=winstadiahide
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+UmdfFileObjectPolicy=AllowNullAndUnknownFileObjects
+UmdfMethodNeitherAction=Copy
+UmdfFsContextUsePolicy=CanUseFsContext2
+
+[UmdfInstall]
+UmdfLibraryVersion=2.31.0
+ServiceBinary="%13%\winstadiahide.dll"
+
+[DriverCopy]
+winstadiahide.dll
+
+[Strings]
+Provider="winstadia"
+DiskName="winstadia installation disk"
+DeviceDesc="Stadia controller (hidden by winstadia)"

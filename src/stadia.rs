@@ -1,8 +1,5 @@
 //! Stadia controller HID protocol (Bluetooth-mode firmware, USB or BLE transport).
 
-pub const VENDOR_ID: u16 = 0x18D1;
-pub const PRODUCT_ID: u16 = 0x9400;
-
 const INPUT_REPORT_ID: u8 = 0x03;
 const RUMBLE_REPORT_ID: u8 = 0x05;
 

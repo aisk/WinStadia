@@ -1,6 +1,7 @@
 # Installs (or with -Uninstall removes) the driver package built by build.ps1:
-# trusts the self-signed certificate on this machine and creates the
-# root-enumerated virtual device. Elevates itself; output goes to out\install.log.
+# trusts the self-signed certificate on this machine, creates the root-enumerated
+# virtual device and puts the hide filter on Stadia controllers.
+# Elevates itself; output goes to out\install.log.
 param([switch]$Uninstall)
 
 $ErrorActionPreference = 'Stop'
@@ -30,8 +31,9 @@ try {
 
     if ($Uninstall) {
         if ($installed) { & $devcon remove $hardwareId }
+        # Removing the hide filter returns the controller to the inbox driver.
         Get-ChildItem "$env:windir\INF\oem*.inf" |
-            Where-Object { Select-String -Path $_ -SimpleMatch $hardwareId -Quiet } |
+            Where-Object { Select-String -Path $_ -Pattern 'winstadia(hide)?\.dll' -Quiet } |
             ForEach-Object { pnputil /delete-driver $_.Name /uninstall /force }
         foreach ($store in $stores) {
             Remove-Item "$store\$thumbprint" -ErrorAction SilentlyContinue
@@ -45,8 +47,11 @@ try {
         } else {
             & $devcon install $inf $hardwareId
         }
+        "devcon exit code: $LASTEXITCODE"
+        # Applies to connected controllers now and to any that show up later.
+        pnputil /add-driver (Join-Path $out 'pkg\winstadiahide.inf') /install
+        "pnputil exit code: $LASTEXITCODE"
     }
-    "devcon exit code: $LASTEXITCODE"
 } catch {
     "FAILED: $_"
 } finally {

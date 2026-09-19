@@ -147,4 +147,5 @@ version = "0.1.0"
 dependencies = [
  "ctrlc",
  "hidapi",
+ "windows-sys",
 ]
