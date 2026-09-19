@@ -1,20 +1,22 @@
+//! Diagnostics for the winstadia drivers. The drivers work on their own; this
+//! tool only inspects them and the physical controller.
+
 mod controller;
 mod discovery;
-mod ds4;
+mod pad;
 mod stadia;
 
 use std::error::Error;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use hidapi::{HidApi, HidDevice};
+use hidapi::HidApi;
 
 use controller::Controller;
 
 const READ_TIMEOUT_MS: i32 = 8;
-const OUTPUT_POLL_INTERVAL: Duration = Duration::from_millis(16);
 const RESCAN_INTERVAL: Duration = Duration::from_secs(1);
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -23,19 +25,6 @@ fn open_controller(api: &HidApi) -> Option<Controller> {
     discovery::controller_open_paths()
         .iter()
         .find_map(|path| Controller::open(api, path))
-}
-
-fn open_virtual_pad(api: &mut HidApi) -> Result<HidDevice> {
-    api.refresh_devices()?;
-    let info = api
-        .device_list()
-        .find(|d| {
-            d.vendor_id() == ds4::VENDOR_ID
-                && d.product_id() == ds4::PRODUCT_ID
-                && d.serial_number() == Some(ds4::SERIAL)
-        })
-        .ok_or("virtual DualShock 4 not found, install the driver with driver\\install.ps1")?;
-    Ok(info.open_device(api)?)
 }
 
 fn wait_for_controller(api: &HidApi, stop: &AtomicBool) -> Option<Controller> {
@@ -53,69 +42,27 @@ fn wait_for_controller(api: &HidApi, stop: &AtomicBool) -> Option<Controller> {
     None
 }
 
-fn poll_output(pad: &HidDevice) -> Result<Option<ds4::Output>> {
-    let mut request = ds4::output_feature_request();
-    let len = pad.get_feature_report(&mut request)?;
-    Ok(ds4::parse_output_feature(&request[..len]))
-}
+/// Reports what the driver's bridge to the controller is doing.
+fn status(api: &HidApi) -> Result<()> {
+    let info = api
+        .device_list()
+        .find(|d| {
+            d.vendor_id() == pad::VENDOR_ID
+                && d.product_id() == pad::PRODUCT_ID
+                && d.serial_number() == Some(pad::SERIAL)
+        })
+        .ok_or("virtual DualShock 4 not found, install the driver with driver\\install.ps1")?;
+    let device = info.open_device(api)?;
 
-/// Bridges the controller to the virtual pad until the controller
-/// disconnects or `stop` is set.
-fn run_session(controller: &Controller, pad: &HidDevice, stop: &AtomicBool) -> Result<()> {
-    let mut counter = 0u8;
-    let mut last_state = None;
-    // The driver keeps the last output report around; only rumble written
-    // during this session counts.
-    let mut output_sequence = poll_output(pad)?.map(|output| output.sequence);
-    let mut last_output_poll = Instant::now();
-    let mut rumble_failed = false;
-    let mut report = [0u8; 64];
-
-    while !stop.load(Ordering::Relaxed) {
-        if last_output_poll.elapsed() >= OUTPUT_POLL_INTERVAL {
-            last_output_poll = Instant::now();
-            if let Some(output) = poll_output(pad)?
-                && output_sequence.replace(output.sequence) != Some(output.sequence)
-                && let Some((strong, weak)) = output.rumble
-                && let Err(e) = controller.rumble(strong, weak)
-                && !rumble_failed
-            {
-                // A lost controller shows up as a read error below.
-                println!("Rumble is not working: {e}");
-                rumble_failed = true;
-            }
-        }
-
-        let len = controller.read_timeout(&mut report, READ_TIMEOUT_MS)?;
-        let Some(state) = stadia::parse(&report[..len]) else {
-            continue;
-        };
-        if last_state != Some(state) {
-            pad.send_feature_report(&ds4::input_feature_report(&state, counter))?;
-            counter = counter.wrapping_add(1);
-            last_state = Some(state);
-        }
-    }
-    Ok(())
-}
-
-fn bridge(api: &mut HidApi, stop: &AtomicBool) -> Result<()> {
-    let pad = open_virtual_pad(api)?;
-
-    while let Some(controller) = wait_for_controller(api, stop) {
-        println!("Stadia controller connected.");
-        let result = run_session(&controller, &pad, stop);
-        let _ = controller.rumble(0, 0);
-        pad.send_feature_report(&ds4::input_feature_report(&stadia::State::default(), 0))?;
-        if let Err(e) = result {
-            println!("Controller disconnected: {e}");
-        }
-    }
+    let mut request = pad::status_request();
+    let len = device.get_feature_report(&mut request)?;
+    let status = pad::parse_status(&request[..len]).ok_or("unexpected status report")?;
+    println!("Driver: {status}");
     Ok(())
 }
 
 /// Prints raw input reports as they change, to verify the report layout.
-fn dump(api: &mut HidApi, stop: &AtomicBool) -> Result<()> {
+fn dump(api: &HidApi, stop: &AtomicBool) -> Result<()> {
     let Some(device) = wait_for_controller(api, stop) else {
         return Ok(());
     };
@@ -154,11 +101,11 @@ fn main() -> Result<()> {
         move || stop.store(true, Ordering::Relaxed)
     })?;
 
-    let mut api = HidApi::new()?;
+    let api = HidApi::new()?;
     match std::env::args().nth(1).as_deref() {
-        None => bridge(&mut api, &stop),
-        Some("dump") => dump(&mut api, &stop),
+        None | Some("status") => status(&api),
+        Some("dump") => dump(&api, &stop),
         Some("rumble") => rumble(&api, &stop),
-        Some(_) => Err("usage: winstadia [dump | rumble]".into()),
+        Some(_) => Err("usage: winstadia [status | dump | rumble]".into()),
     }
 }

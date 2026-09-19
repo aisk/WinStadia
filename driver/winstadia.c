@@ -1,11 +1,9 @@
 // UMDF2 HID minidriver exposing a virtual DualShock 4.
 //
-// The driver is a dumb pipe: the winstadia app injects complete DS4 input
-// reports through a vendor feature report and polls another one for the
-// output report (rumble) last written by a game.
+// Input comes from the bridge thread (bridge.c), which reads the physical
+// Stadia controller; rumble written by games goes back the same way.
 
-#include <windows.h>
-#include <wdf.h>
+#include "winstadia.h"
 #include <hidport.h>
 
 #define DS4_VID 0x054C
@@ -17,14 +15,13 @@
 #define REPORT_ID_CALIBRATION 0x02
 #define REPORT_ID_SERIAL 0x12
 #define REPORT_ID_FIRMWARE 0xA3
-// App channel: SET_FEATURE carries the input report payload, GET_FEATURE
-// returns a sequence number followed by the last output report payload.
-#define REPORT_ID_APP_INPUT 0xE0
-#define REPORT_ID_APP_OUTPUT 0xE1
+// Not part of a real DS4: bridge state for diagnostics, see GetFeature.
+#define REPORT_ID_STATUS 0xE1
 
-#define INPUT_REPORT_LEN 64
-#define OUTPUT_REPORT_LEN 32
-#define APP_REPORT_LEN 64
+#define STATUS_REPORT_LEN 64
+
+// DS4 output report: [1] flags, [4] weak motor, [5] strong motor.
+#define OUTPUT_FLAG_RUMBLE 0x01
 
 static const UCHAR ReportDescriptor[] = {
     0x05, 0x01,       // Usage Page (Generic Desktop)
@@ -93,10 +90,6 @@ static const UCHAR ReportDescriptor[] = {
     0x09, 0x26,       //   Usage (0x26)
     0x95, 0x30,       //   Report Count (48)
     0xB1, 0x02,       //   Feature (Data,Var,Abs)
-    0x85, 0xE0,       //   Report ID (224)
-    0x09, 0x27,       //   Usage (0x27)
-    0x95, 0x3F,       //   Report Count (63)
-    0xB1, 0x02,       //   Feature (Data,Var,Abs)
     0x85, 0xE1,       //   Report ID (225)
     0x09, 0x28,       //   Usage (0x28)
     0x95, 0x3F,       //   Report Count (63)
@@ -120,25 +113,14 @@ static const HID_DEVICE_ATTRIBUTES DeviceAttributes = {
     DS4_VERSION,
 };
 
-// Idle state: sticks centered, hat released, USB powered, no touches.
-static const UCHAR IdleInputReport[INPUT_REPORT_LEN] = {
-    [0] = REPORT_ID_INPUT, [1] = 0x80, [2] = 0x80, [3] = 0x80, [4] = 0x80,
-    [5] = 0x08, [30] = 0x1B, [35] = 0x80, [39] = 0x80,
-};
-
-typedef struct _DEVICE_CONTEXT {
-    WDFQUEUE ReadQueue;
-    UCHAR InputReport[INPUT_REPORT_LEN];
-    BOOLEAN InputChanged;
-    UCHAR OutputReport[OUTPUT_REPORT_LEN];
-    UCHAR OutputSequence;
-} DEVICE_CONTEXT, *PDEVICE_CONTEXT;
-
-WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, GetDeviceContext)
+// Sticks centered, hat released.
+const UCHAR IdleControls[PAD_CONTROLS_LEN] = {0x80, 0x80, 0x80, 0x80, 0x08};
 
 DRIVER_INITIALIZE DriverEntry;
 EVT_WDF_DRIVER_DEVICE_ADD EvtDeviceAdd;
 EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL EvtIoDeviceControl;
+EVT_WDF_DEVICE_SELF_MANAGED_IO_INIT EvtSelfManagedIoInit;
+EVT_WDF_DEVICE_SELF_MANAGED_IO_CLEANUP EvtSelfManagedIoCleanup;
 
 static NTSTATUS
 CopyToRequest(WDFREQUEST Request, const VOID *Source, size_t Length)
@@ -172,27 +154,71 @@ GetInputBuffer(WDFREQUEST Request, size_t MinLength, PUCHAR *Buffer, size_t *Len
     return *Length < MinLength ? STATUS_INVALID_BUFFER_SIZE : STATUS_SUCCESS;
 }
 
+// Rebuilds the input report around Context->Controls. Caller holds the lock.
+static VOID
+BuildInputReport(PDEVICE_CONTEXT Context)
+{
+    PUCHAR report = Context->InputReport;
+    // The real pad counts in 5.33 ms units at a 4 ms report interval.
+    USHORT timestamp = (USHORT)(Context->ReportCounter * 188);
+
+    RtlZeroMemory(report, INPUT_REPORT_LEN);
+    report[0] = REPORT_ID_INPUT;
+    RtlCopyMemory(report + 1, Context->Controls, PAD_CONTROLS_LEN);
+    report[7] |= (UCHAR)(Context->ReportCounter << 2);
+    report[10] = (UCHAR)timestamp;
+    report[11] = (UCHAR)(timestamp >> 8);
+    report[30] = 0x1B; // USB powered, battery full
+    report[35] = 0x80; // no touch
+    report[39] = 0x80;
+    Context->ReportCounter++;
+}
+
+VOID
+PadPublishControls(PDEVICE_CONTEXT Context, const UCHAR *Controls)
+{
+    UCHAR report[INPUT_REPORT_LEN];
+    WDFREQUEST read = NULL;
+
+    AcquireSRWLockExclusive(&Context->Lock);
+    if (RtlEqualMemory(Context->Controls, Controls, PAD_CONTROLS_LEN)) {
+        ReleaseSRWLockExclusive(&Context->Lock);
+        return;
+    }
+    RtlCopyMemory(Context->Controls, Controls, PAD_CONTROLS_LEN);
+    BuildInputReport(Context);
+    // Taking the pending read under the lock keeps ReadReport from parking a
+    // request right after this update, which would deliver it late.
+    if (NT_SUCCESS(WdfIoQueueRetrieveNextRequest(Context->ReadQueue, &read))) {
+        RtlCopyMemory(report, Context->InputReport, INPUT_REPORT_LEN);
+    } else {
+        Context->InputChanged = TRUE;
+    }
+    ReleaseSRWLockExclusive(&Context->Lock);
+
+    if (read != NULL) {
+        WdfRequestComplete(read, CopyToRequest(read, report, INPUT_REPORT_LEN));
+    }
+}
+
 static NTSTATUS
 ReadReport(PDEVICE_CONTEXT Context, WDFREQUEST Request, BOOLEAN *Complete)
 {
+    UCHAR report[INPUT_REPORT_LEN];
+    NTSTATUS status;
+
+    AcquireSRWLockExclusive(&Context->Lock);
     if (Context->InputChanged) {
         Context->InputChanged = FALSE;
-        return CopyToRequest(Request, Context->InputReport, INPUT_REPORT_LEN);
+        RtlCopyMemory(report, Context->InputReport, INPUT_REPORT_LEN);
+        ReleaseSRWLockExclusive(&Context->Lock);
+        return CopyToRequest(Request, report, INPUT_REPORT_LEN);
     }
-    NTSTATUS status = WdfRequestForwardToIoQueue(Request, Context->ReadQueue);
+    status = WdfRequestForwardToIoQueue(Request, Context->ReadQueue);
+    ReleaseSRWLockExclusive(&Context->Lock);
+
     *Complete = !NT_SUCCESS(status);
     return status;
-}
-
-static VOID
-PublishInputReport(PDEVICE_CONTEXT Context)
-{
-    WDFREQUEST read;
-    if (!NT_SUCCESS(WdfIoQueueRetrieveNextRequest(Context->ReadQueue, &read))) {
-        Context->InputChanged = TRUE;
-        return;
-    }
-    WdfRequestComplete(read, CopyToRequest(read, Context->InputReport, INPUT_REPORT_LEN));
 }
 
 // The report buffer of write-type requests starts with the report ID.
@@ -205,22 +231,16 @@ WriteReport(PDEVICE_CONTEXT Context, WDFREQUEST Request)
     if (!NT_SUCCESS(status)) {
         return status;
     }
-
-    switch (report[0]) {
-    case REPORT_ID_OUTPUT:
-        RtlZeroMemory(Context->OutputReport, OUTPUT_REPORT_LEN);
-        RtlCopyMemory(Context->OutputReport, report, min(length, OUTPUT_REPORT_LEN));
-        Context->OutputSequence++;
-        break;
-    case REPORT_ID_APP_INPUT:
-        if (length < APP_REPORT_LEN) {
-            return STATUS_INVALID_BUFFER_SIZE;
-        }
-        RtlCopyMemory(Context->InputReport + 1, report + 1, INPUT_REPORT_LEN - 1);
-        PublishInputReport(Context);
-        break;
-    default:
+    if (report[0] != REPORT_ID_OUTPUT) {
         return STATUS_INVALID_PARAMETER;
+    }
+
+    if (length > 5 && (report[1] & OUTPUT_FLAG_RUMBLE)) {
+        AcquireSRWLockExclusive(&Context->Lock);
+        Context->RumbleWeak = report[4];
+        Context->RumbleStrong = report[5];
+        ReleaseSRWLockExclusive(&Context->Lock);
+        SetEvent(Context->RumbleEvent);
     }
     WdfRequestSetInformation(Request, length);
     return STATUS_SUCCESS;
@@ -238,7 +258,7 @@ GetFeature(PDEVICE_CONTEXT Context, WDFREQUEST Request)
         return status;
     }
 
-    UCHAR report[APP_REPORT_LEN] = {*id};
+    UCHAR report[STATUS_REPORT_LEN] = {*id};
     switch (*id) {
     case REPORT_ID_CALIBRATION:
         length = 37;
@@ -249,15 +269,30 @@ GetFeature(PDEVICE_CONTEXT Context, WDFREQUEST Request)
     case REPORT_ID_FIRMWARE:
         length = 49;
         break;
-    case REPORT_ID_APP_OUTPUT:
-        length = APP_REPORT_LEN;
-        report[1] = Context->OutputSequence;
-        RtlCopyMemory(report + 2, Context->OutputReport + 1, OUTPUT_REPORT_LEN - 1);
+    case REPORT_ID_STATUS:
+        // [1] bridge state, [2] rumble failed, [3..7] last Win32 error (LE)
+        length = STATUS_REPORT_LEN;
+        AcquireSRWLockShared(&Context->Lock);
+        report[1] = Context->BridgeState;
+        report[2] = Context->RumbleFailed;
+        RtlCopyMemory(report + 3, &Context->BridgeError, sizeof(ULONG));
+        ReleaseSRWLockShared(&Context->Lock);
         break;
     default:
         return STATUS_INVALID_PARAMETER;
     }
     return CopyToRequest(Request, report, length);
+}
+
+static NTSTATUS
+GetInputReport(PDEVICE_CONTEXT Context, WDFREQUEST Request)
+{
+    UCHAR report[INPUT_REPORT_LEN];
+
+    AcquireSRWLockShared(&Context->Lock);
+    RtlCopyMemory(report, Context->InputReport, INPUT_REPORT_LEN);
+    ReleaseSRWLockShared(&Context->Lock);
+    return CopyToRequest(Request, report, INPUT_REPORT_LEN);
 }
 
 static NTSTATUS
@@ -319,14 +354,13 @@ EvtIoDeviceControl(
         break;
     case IOCTL_HID_WRITE_REPORT:
     case IOCTL_UMDF_HID_SET_OUTPUT_REPORT:
-    case IOCTL_UMDF_HID_SET_FEATURE:
         status = WriteReport(context, Request);
         break;
     case IOCTL_UMDF_HID_GET_FEATURE:
         status = GetFeature(context, Request);
         break;
     case IOCTL_UMDF_HID_GET_INPUT_REPORT:
-        status = CopyToRequest(Request, context->InputReport, INPUT_REPORT_LEN);
+        status = GetInputReport(context, Request);
         break;
     case IOCTL_HID_GET_STRING:
         status = GetString(Request);
@@ -342,8 +376,21 @@ EvtIoDeviceControl(
 }
 
 NTSTATUS
+EvtSelfManagedIoInit(WDFDEVICE Device)
+{
+    return BridgeStart(GetDeviceContext(Device));
+}
+
+VOID
+EvtSelfManagedIoCleanup(WDFDEVICE Device)
+{
+    BridgeStop(GetDeviceContext(Device));
+}
+
+NTSTATUS
 EvtDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
 {
+    WDF_PNPPOWER_EVENT_CALLBACKS pnpCallbacks;
     WDF_OBJECT_ATTRIBUTES attributes;
     WDF_IO_QUEUE_CONFIG queueConfig;
     WDFDEVICE device;
@@ -356,15 +403,21 @@ EvtDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
     // mshidumdf.sys is the function driver, this driver sits below it.
     WdfFdoInitSetFilter(DeviceInit);
 
+    WDF_PNPPOWER_EVENT_CALLBACKS_INIT(&pnpCallbacks);
+    pnpCallbacks.EvtDeviceSelfManagedIoInit = EvtSelfManagedIoInit;
+    pnpCallbacks.EvtDeviceSelfManagedIoCleanup = EvtSelfManagedIoCleanup;
+    WdfDeviceInitSetPnpPowerEventCallbacks(DeviceInit, &pnpCallbacks);
+
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, DEVICE_CONTEXT);
     status = WdfDeviceCreate(&DeviceInit, &attributes, &device);
     if (!NT_SUCCESS(status)) {
         return status;
     }
     context = GetDeviceContext(device);
-    RtlCopyMemory(context->InputReport, IdleInputReport, INPUT_REPORT_LEN);
+    InitializeSRWLock(&context->Lock);
+    RtlCopyMemory(context->Controls, IdleControls, PAD_CONTROLS_LEN);
+    BuildInputReport(context);
 
-    // Sequential dispatch serializes all access to the device context.
     WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchSequential);
     queueConfig.EvtIoDeviceControl = EvtIoDeviceControl;
     status = WdfIoQueueCreate(device, &queueConfig, WDF_NO_OBJECT_ATTRIBUTES, &queue);
