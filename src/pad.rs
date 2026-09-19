@@ -1,10 +1,11 @@
-//! DualShock 4 presented by the winstadia UMDF driver (driver/winstadia.c).
+//! Xbox controller presented by the winstadia UMDF driver (driver/winstadia.c),
+//! reached through its HID interface.
 
 use std::fmt;
 
-pub const VENDOR_ID: u16 = 0x054C;
-pub const PRODUCT_ID: u16 = 0x09CC;
-/// Serial number string that tells the pad apart from a real DS4.
+pub const VENDOR_ID: u16 = 0x045E;
+pub const PRODUCT_ID: u16 = 0x02FD;
+/// Serial number string that tells the pad apart from a real Xbox controller.
 pub const SERIAL: &str = "winstadia";
 
 // Status feature report: [1] rumble failed, [2..6] last error NTSTATUS
@@ -13,11 +14,6 @@ pub const SERIAL: &str = "winstadia";
 const REPORT_ID_STATUS: u8 = 0xE1;
 pub const STATUS_REPORT_LEN: usize = 64;
 const RAW_REPORT_OFFSET: usize = 7;
-
-// Output report: [1] flags, [4] weak motor, [5] strong motor.
-const REPORT_ID_OUTPUT: u8 = 0x05;
-const OUTPUT_REPORT_LEN: usize = 32;
-const OUTPUT_FLAG_RUMBLE: u8 = 0x01;
 
 /// State of the driver's link to the controller.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,16 +41,6 @@ pub fn parse_status(report: &[u8]) -> Option<Status> {
         error: u32::from_le_bytes([report[2], report[3], report[4], report[5]]),
         raw_report: raw_report.to_vec(),
     })
-}
-
-/// Builds the output report that sets the motor speeds (0..=255).
-pub fn rumble_report(strong: u8, weak: u8) -> [u8; OUTPUT_REPORT_LEN] {
-    let mut report = [0u8; OUTPUT_REPORT_LEN];
-    report[0] = REPORT_ID_OUTPUT;
-    report[1] = OUTPUT_FLAG_RUMBLE;
-    report[4] = weak;
-    report[5] = strong;
-    report
 }
 
 impl fmt::Display for Status {
@@ -101,11 +87,5 @@ mod tests {
         assert_eq!(parse_status(&[0x01, 0, 0, 0, 0, 0, 0]), None);
         // Raw report length pointing past the end.
         assert_eq!(parse_status(&[REPORT_ID_STATUS, 0, 0, 0, 0, 0, 9, 1]), None);
-    }
-
-    #[test]
-    fn rumble_report_layout() {
-        let report = rumble_report(255, 1);
-        assert_eq!(report[..6], [0x05, 0x01, 0, 0, 1, 255]);
     }
 }

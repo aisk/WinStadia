@@ -1,5 +1,5 @@
 // USB side: reads Stadia input reports from the interrupt endpoint, translates
-// them to DS4 controls and sends rumble the other way. WinUSB sits below this
+// them to Xbox controls and sends rumble the other way. WinUSB sits below this
 // driver and carries the transfers.
 
 #include "winstadia.h"
@@ -27,7 +27,6 @@
 #define STADIA_B2_OPTIONS 0x40
 #define STADIA_B2_MENU 0x20
 #define STADIA_B2_STADIA 0x10
-#define STADIA_B2_CAPTURE 0x01
 
 #define STADIA_B3_A 0x40
 #define STADIA_B3_B 0x20
@@ -37,60 +36,66 @@
 #define STADIA_B3_R1 0x02
 #define STADIA_B3_LS 0x01
 
-// DS4 controls, indexed as in PAD_CONTROLS_LEN (input report offset minus 1):
-//   [0..4] left X, left Y, right X, right Y, same conventions as the Stadia
-//   [4] triangle, circle, cross, square (bit 7..4), hat (bit 3..0)
-//   [5] R3, L3, Options, Share, R2, L2, R1, L1 (bit 7..0)
-//   [6] touchpad click, PS (bit 1..0)
-//   [7..9] L2, R2 analog
-#define DS4_B4_TRIANGLE 0x80
-#define DS4_B4_CIRCLE 0x40
-#define DS4_B4_CROSS 0x20
-#define DS4_B4_SQUARE 0x10
+// Xbox controls, as laid out in PAD_CONTROLS_LEN:
+//   [0..8] left X, left Y, right X, right Y: 16 bit little endian, centered
+//          at 0x8000, Y grows downwards
+//   [8..12] left, right trigger: 10 bit little endian
+//   [12] d-pad hat: 1 = up, clockwise to 8 = up-left, 0 = released
+//   [13] Menu, View, RB, LB, Y, X, B, A (bit 7..0)
+//   [14] RS click, LS click (bit 1..0)
+//   [15] Xbox button
+#define XBOX_B13_MENU 0x80
+#define XBOX_B13_VIEW 0x40
+#define XBOX_B13_RB 0x20
+#define XBOX_B13_LB 0x10
+#define XBOX_B13_Y 0x08
+#define XBOX_B13_X 0x04
+#define XBOX_B13_B 0x02
+#define XBOX_B13_A 0x01
 
-#define DS4_B5_R3 0x80
-#define DS4_B5_L3 0x40
-#define DS4_B5_OPTIONS 0x20
-#define DS4_B5_SHARE 0x10
-#define DS4_B5_R2 0x08
-#define DS4_B5_L2 0x04
-#define DS4_B5_R1 0x02
-#define DS4_B5_L1 0x01
-
-#define DS4_B6_TOUCHPAD 0x02
-#define DS4_B6_PS 0x01
+#define XBOX_B14_RS 0x02
+#define XBOX_B14_LS 0x01
 
 #define BIT(source, mask, target) (((source) & (mask)) ? (target) : 0)
 
 EVT_WDF_USB_READER_COMPLETION_ROUTINE EvtInputReport;
 EVT_WDF_USB_READERS_FAILED EvtReadersFailed;
 
-// Buttons map by position: A/B/X/Y to cross/circle/square/triangle, Options
-// and Menu to Share and Options, Stadia to PS, Capture to the touchpad click.
+static VOID
+PutUshort(UCHAR *Target, ULONG Value)
+{
+    Target[0] = (UCHAR)Value;
+    Target[1] = (UCHAR)(Value >> 8);
+}
+
+// The buttons carry the same letters in the same places. Options and Menu
+// become View and Menu, Stadia the Xbox button. Capture and Assistant have no
+// counterpart.
 static VOID
 MapControls(const UCHAR *Stadia, UCHAR *Controls)
 {
     UCHAR b2 = Stadia[2];
     UCHAR b3 = Stadia[3];
 
-    RtlCopyMemory(Controls, Stadia + 4, 4);
-    Controls[4] = (UCHAR)(min(Stadia[1], STADIA_HAT_RELEASED) |
-                          BIT(b3, STADIA_B3_Y, DS4_B4_TRIANGLE) |
-                          BIT(b3, STADIA_B3_B, DS4_B4_CIRCLE) |
-                          BIT(b3, STADIA_B3_A, DS4_B4_CROSS) |
-                          BIT(b3, STADIA_B3_X, DS4_B4_SQUARE));
-    Controls[5] = (UCHAR)(BIT(b2, STADIA_B2_RS, DS4_B5_R3) |
-                          BIT(b3, STADIA_B3_LS, DS4_B5_L3) |
-                          BIT(b2, STADIA_B2_MENU, DS4_B5_OPTIONS) |
-                          BIT(b2, STADIA_B2_OPTIONS, DS4_B5_SHARE) |
-                          (Stadia[9] ? DS4_B5_R2 : 0) |
-                          (Stadia[8] ? DS4_B5_L2 : 0) |
-                          BIT(b3, STADIA_B3_R1, DS4_B5_R1) |
-                          BIT(b3, STADIA_B3_L1, DS4_B5_L1));
-    Controls[6] = (UCHAR)(BIT(b2, STADIA_B2_CAPTURE, DS4_B6_TOUCHPAD) |
-                          BIT(b2, STADIA_B2_STADIA, DS4_B6_PS));
-    Controls[7] = Stadia[8];
-    Controls[8] = Stadia[9];
+    for (int i = 0; i < 4; i++) {
+        // 1..255 centered at 128 becomes 2..65534 centered at 0x8000.
+        PutUshort(Controls + 2 * i, (ULONG)(0x8000 + (max(Stadia[4 + i], 1) - 0x80) * 258));
+    }
+    for (int i = 0; i < 2; i++) {
+        // 0..255 becomes 0..1023.
+        PutUshort(Controls + 8 + 2 * i, (ULONG)(Stadia[8 + i] * 4 + (Stadia[8 + i] >> 6)));
+    }
+    Controls[12] = Stadia[1] < STADIA_HAT_RELEASED ? Stadia[1] + 1 : 0;
+    Controls[13] = (UCHAR)(BIT(b2, STADIA_B2_MENU, XBOX_B13_MENU) |
+                           BIT(b2, STADIA_B2_OPTIONS, XBOX_B13_VIEW) |
+                           BIT(b3, STADIA_B3_R1, XBOX_B13_RB) |
+                           BIT(b3, STADIA_B3_L1, XBOX_B13_LB) |
+                           BIT(b3, STADIA_B3_Y, XBOX_B13_Y) |
+                           BIT(b3, STADIA_B3_X, XBOX_B13_X) |
+                           BIT(b3, STADIA_B3_B, XBOX_B13_B) |
+                           BIT(b3, STADIA_B3_A, XBOX_B13_A));
+    Controls[14] = (UCHAR)(BIT(b2, STADIA_B2_RS, XBOX_B14_RS) | BIT(b3, STADIA_B3_LS, XBOX_B14_LS));
+    Controls[PAD_GUIDE_INDEX] = BIT(b2, STADIA_B2_STADIA, 1);
 }
 
 static VOID

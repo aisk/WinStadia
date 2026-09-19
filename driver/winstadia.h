@@ -1,4 +1,4 @@
-// Shared between the HID side presenting a DualShock 4 (winstadia.c) and the
+// Shared between the HID side presenting an Xbox controller (winstadia.c) and the
 // USB side talking to the Stadia controller (stadia.c).
 
 #pragma once
@@ -8,11 +8,11 @@
 #include <usb.h>
 #include <wdfusb.h>
 
-#define INPUT_REPORT_LEN 64
-
-// Bytes [1..10) of the DS4 input report: sticks, hat and buttons, triggers.
-// The report counter bits in byte [7] are left clear.
-#define PAD_CONTROLS_LEN 9
+// Controls of the presented pad: the payload of the gamepad input report,
+// followed by the guide button, which travels in a report of its own.
+#define PAD_GAMEPAD_LEN 15
+#define PAD_GUIDE_INDEX PAD_GAMEPAD_LEN
+#define PAD_CONTROLS_LEN (PAD_GAMEPAD_LEN + 1)
 
 #define RAW_REPORT_MAX 16
 
@@ -21,10 +21,10 @@ typedef struct _DEVICE_CONTEXT {
     SRWLOCK Lock;
 
     WDFQUEUE ReadQueue;
-    UCHAR InputReport[INPUT_REPORT_LEN];
     UCHAR Controls[PAD_CONTROLS_LEN];
-    UCHAR ReportCounter;
-    BOOLEAN InputChanged;
+    // Set while the report holds changes no read has picked up yet.
+    BOOLEAN GamepadChanged;
+    BOOLEAN GuideChanged;
 
     // Diagnostics, reported through the status feature report.
     UCHAR RawReport[RAW_REPORT_MAX];
@@ -47,7 +47,7 @@ typedef struct _DEVICE_CONTEXT {
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, GetDeviceContext)
 
-// Publishes new control values as a DS4 input report, if they changed.
+// Publishes new control values as input reports, if they changed.
 VOID PadPublishControls(PDEVICE_CONTEXT Context, const UCHAR *Controls);
 
 EVT_WDF_DEVICE_PREPARE_HARDWARE StadiaPrepareHardware;

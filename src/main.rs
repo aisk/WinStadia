@@ -24,7 +24,7 @@ fn open_pad(api: &HidApi) -> Result<HidDevice> {
                 && d.product_id() == pad::PRODUCT_ID
                 && d.serial_number() == Some(pad::SERIAL)
         })
-        .ok_or("winstadia DualShock 4 not found, is the controller plugged in and the driver installed?")?;
+        .ok_or("winstadia controller not found, is the controller plugged in and the driver installed?")?;
     Ok(info.open_device(api)?)
 }
 
@@ -58,16 +58,6 @@ fn dump(api: &HidApi, stop: &AtomicBool) -> Result<()> {
     Ok(())
 }
 
-/// Pulses both motors, to check the rumble path to the controller.
-fn rumble(api: &HidApi) -> Result<()> {
-    let device = open_pad(api)?;
-    device.write(&pad::rumble_report(255, 255))?;
-    thread::sleep(Duration::from_millis(500));
-    device.write(&pad::rumble_report(0, 0))?;
-    println!("Rumble sent. Driver: {}", read_status(&device)?);
-    Ok(())
-}
-
 fn main() -> Result<()> {
     let stop = Arc::new(AtomicBool::new(false));
     ctrlc::set_handler({
@@ -79,7 +69,6 @@ fn main() -> Result<()> {
     match std::env::args().nth(1).as_deref() {
         None | Some("status") => status(&api),
         Some("dump") => dump(&api, &stop),
-        Some("rumble") => rumble(&api),
-        Some(_) => Err("usage: winstadia [status | dump | rumble]".into()),
+        Some(_) => Err("usage: winstadia [status | dump]".into()),
     }
 }

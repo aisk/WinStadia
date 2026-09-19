@@ -1,6 +1,8 @@
-; HID transport minidriver (UMDF2) presenting a Stadia controller as a DualShock 4.
-; Takes the place of hidusb on the controller's USB HID interface. The stack is
-; mshidumdf.sys as function driver, this driver below it and WinUSB at the bottom.
+; HID transport minidriver (UMDF2) presenting a Stadia controller as an Xbox
+; Wireless Controller. Takes the place of hidusb on the controller's USB HID
+; interface. The stack is the inbox xinputhid filter on top, mshidumdf.sys as
+; function driver, this driver below it and WinUSB at the bottom. That mirrors
+; what xinputhid.inf sets up for Xbox controllers on Bluetooth.
 ; Depends on MsHidUmdf.inf, which was introduced in Windows build 22000.
 
 [Version]
@@ -29,6 +31,7 @@ winstadia.dll=1
 
 [Install.NT]
 CopyFiles=DriverCopy
+AddReg=XInput_AddReg
 Include=MsHidUmdf.inf,WUDFRD.inf,winusb.inf
 Needs=MsHidUmdf.NT,WUDFRD_LowerFilter.NT,WINUSB_LowerFilter.NT
 
@@ -39,11 +42,33 @@ Needs=MsHidUmdf.NT.hw,WUDFRD_LowerFilter.NT.hw,WINUSB_LowerFilter.NT.hw
 [Install.NT.Services]
 Include=MsHidUmdf.inf,WUDFRD.inf,winusb.inf
 Needs=MsHidUmdf.NT.Services,WUDFRD_LowerFilter.NT.Services,WINUSB_LowerFilter.NT.Services
+AddService=xinputhid,0x000001f8,XInput_Service
 
 ; Lower filters attach in the order listed, so WinUSB ends up at the bottom.
 [Install.NT.Filters]
 Include=winusb.inf,WUDFRD.inf
 Needs=WINUSB_LowerFilter.NT.Filters,WUDFRD_LowerFilter.NT.Filters
+AddFilter=xinputhid,,XInput_FilterPosition
+
+[XInput_FilterPosition]
+FilterPosition=Upper
+
+; Same values as in xinputhid.inf.
+[XInput_AddReg]
+HKR,,"DevicePropertyFlags",0x00010001,0x1
+
+[XInput_Service]
+DisplayName=%XInputServiceName%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%12%\xinputhid.sys
+LoadOrderGroup=Base
+AddReg=XInput_ServiceAddReg
+
+[XInput_ServiceAddReg]
+HKR,,"DevicePropertyFlags",0x00010001,0xE
+HKR,,"ConfigFlags",0x00010001,1
 
 [Install.NT.Wdf]
 UmdfService="winstadia",UmdfInstall
@@ -64,4 +89,5 @@ winstadia.dll
 [Strings]
 Provider="winstadia"
 DiskName="winstadia installation disk"
-DeviceDesc="Stadia controller (winstadia DualShock 4)"
+DeviceDesc="Stadia controller (winstadia XInput)"
+XInputServiceName="XINPUT HID Filter Driver"
