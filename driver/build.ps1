@@ -9,6 +9,17 @@ $sdkVersion = '10.0.26100.0'
 $umdfVersion = '2.31'
 $certSubject = 'CN=winstadia driver signing'
 
+if (-not (Test-Path $wdk)) {
+    $wdkPackage = 'microsoft.windows.wdk.x64'
+    $wdkPackageVersion = '10.0.26100.6584'
+    $archive = Join-Path $root '.wdk\wdk.zip'
+    New-Item -ItemType Directory -Force (Split-Path $archive) | Out-Null
+    $ProgressPreference = 'SilentlyContinue'
+    Invoke-WebRequest "https://api.nuget.org/v3-flatcontainer/$wdkPackage/$wdkPackageVersion/$wdkPackage.$wdkPackageVersion.nupkg" -OutFile $archive
+    Expand-Archive $archive (Join-Path $root '.wdk\wdk')
+    Remove-Item $archive
+}
+
 $out = Join-Path $PSScriptRoot 'out'
 $obj = Join-Path $out 'obj'
 $pkg = Join-Path $out 'pkg'
