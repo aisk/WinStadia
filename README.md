@@ -70,3 +70,7 @@ cargo run --release -- rumble   # pulse the motors for half a second
 ```
 
 The status is one of three. No controller found, controller found but cannot be opened (with the error code), or connected. A failed rumble write is reported too, which is expected over Bluetooth.
+
+## License
+
+GPLv3, see [LICENSE](LICENSE).
