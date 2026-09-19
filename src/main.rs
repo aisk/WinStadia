@@ -1,8 +1,6 @@
-//! Diagnostics for the winstadia drivers. The drivers work on their own; this
-//! tool only inspects them and the physical controller.
+//! Diagnostics for the winstadia driver. The driver works on its own; this
+//! tool only asks it what it is doing.
 
-mod controller;
-mod discovery;
 mod pad;
 mod stadia;
 
@@ -12,38 +10,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use hidapi::HidApi;
+use hidapi::{HidApi, HidDevice};
 
-use controller::Controller;
-
-const READ_TIMEOUT_MS: i32 = 8;
-const RESCAN_INTERVAL: Duration = Duration::from_secs(1);
+const POLL_INTERVAL: Duration = Duration::from_millis(4);
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-fn open_controller(api: &HidApi) -> Option<Controller> {
-    discovery::controller_open_paths()
-        .iter()
-        .find_map(|path| Controller::open(api, path))
-}
-
-fn wait_for_controller(api: &HidApi, stop: &AtomicBool) -> Option<Controller> {
-    let mut announced = false;
-    while !stop.load(Ordering::Relaxed) {
-        if let Some(device) = open_controller(api) {
-            return Some(device);
-        }
-        if !announced {
-            println!("Waiting for a Stadia controller (USB or Bluetooth)...");
-            announced = true;
-        }
-        thread::sleep(RESCAN_INTERVAL);
-    }
-    None
-}
-
-/// Reports what the driver's bridge to the controller is doing.
-fn status(api: &HidApi) -> Result<()> {
+fn open_pad(api: &HidApi) -> Result<HidDevice> {
     let info = api
         .device_list()
         .find(|d| {
@@ -51,46 +24,47 @@ fn status(api: &HidApi) -> Result<()> {
                 && d.product_id() == pad::PRODUCT_ID
                 && d.serial_number() == Some(pad::SERIAL)
         })
-        .ok_or("virtual DualShock 4 not found, install the driver with driver\\install.ps1")?;
-    let device = info.open_device(api)?;
+        .ok_or("winstadia DualShock 4 not found, is the controller plugged in and the driver installed?")?;
+    Ok(info.open_device(api)?)
+}
 
+fn read_status(device: &HidDevice) -> Result<pad::Status> {
     let mut request = pad::status_request();
     let len = device.get_feature_report(&mut request)?;
-    let status = pad::parse_status(&request[..len]).ok_or("unexpected status report")?;
-    println!("Driver: {status}");
+    Ok(pad::parse_status(&request[..len]).ok_or("unexpected status report")?)
+}
+
+/// Reports what the driver is doing.
+fn status(api: &HidApi) -> Result<()> {
+    println!("Driver: {}", read_status(&open_pad(api)?)?);
     Ok(())
 }
 
-/// Prints raw input reports as they change, to verify the report layout.
+/// Prints raw Stadia input reports as they change, to verify the report layout.
 fn dump(api: &HidApi, stop: &AtomicBool) -> Result<()> {
-    let Some(device) = wait_for_controller(api, stop) else {
-        return Ok(());
-    };
+    let device = open_pad(api)?;
     println!("Dumping input reports, press Ctrl+C to stop.");
 
     let mut last = Vec::new();
-    let mut report = [0u8; 64];
     while !stop.load(Ordering::Relaxed) {
-        let len = device.read_timeout(&mut report, READ_TIMEOUT_MS)?;
-        if len == 0 || last == report[..len] {
-            continue;
+        let report = read_status(&device)?.raw_report;
+        if !report.is_empty() && report != last {
+            let hex: Vec<_> = report.iter().map(|b| format!("{b:02X}")).collect();
+            println!("{}  {:?}", hex.join(" "), stadia::parse(&report));
+            last = report;
         }
-        last = report[..len].to_vec();
-        let hex: Vec<_> = last.iter().map(|b| format!("{b:02X}")).collect();
-        println!("{}  {:?}", hex.join(" "), stadia::parse(&last));
+        thread::sleep(POLL_INTERVAL);
     }
     Ok(())
 }
 
 /// Pulses both motors, to check the rumble path to the controller.
-fn rumble(api: &HidApi, stop: &AtomicBool) -> Result<()> {
-    let Some(controller) = wait_for_controller(api, stop) else {
-        return Ok(());
-    };
-    controller.rumble(255, 255)?;
+fn rumble(api: &HidApi) -> Result<()> {
+    let device = open_pad(api)?;
+    device.write(&pad::rumble_report(255, 255))?;
     thread::sleep(Duration::from_millis(500));
-    controller.rumble(0, 0)?;
-    println!("Rumble sent.");
+    device.write(&pad::rumble_report(0, 0))?;
+    println!("Rumble sent. Driver: {}", read_status(&device)?);
     Ok(())
 }
 
@@ -105,7 +79,7 @@ fn main() -> Result<()> {
     match std::env::args().nth(1).as_deref() {
         None | Some("status") => status(&api),
         Some("dump") => dump(&api, &stop),
-        Some("rumble") => rumble(&api, &stop),
+        Some("rumble") => rumble(&api),
         Some(_) => Err("usage: winstadia [status | dump | rumble]".into()),
     }
 }

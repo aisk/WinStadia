@@ -39,26 +39,19 @@ cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
 Copy-Item "$wdk\Include\$sdkVersion\km\hidport.h" $obj
 
 $minor = $umdfVersion.Split('.')[1]
-# Driver name (DLL and INF share it) -> sources and extra libraries.
-$drivers = @{
-    winstadia     = @{ Sources = 'winstadia.c', 'bridge.c'; Libs = 'cfgmgr32.lib', 'hid.lib' }
-    winstadiahide = @{ Sources = 'hide.c'; Libs = @() }
-}
-foreach ($name in $drivers.Keys) {
-    $sources = $drivers[$name].Sources | ForEach-Object { "$PSScriptRoot\$_" }
-    & cl /nologo /W4 /O2 /MT /LD /std:c17 `
-        /D UMDF_VERSION_MAJOR=2 /D UMDF_VERSION_MINOR=$minor /D UMDF_USING_NTSTATUS `
-        /D UNICODE /D _UNICODE /D _WIN32_WINNT=0x0A00 `
-        /I "$wdk\Include\wdf\umdf\$umdfVersion" /I $obj `
-        /Fo"$obj\\" /Fe"$pkg\$name.dll" $sources `
-        /link /NOIMPLIB /NOEXP "$wdk\Lib\wdf\umdf\x64\$umdfVersion\WdfDriverStubUm.lib" ntdll.lib $drivers[$name].Libs
-    if ($LASTEXITCODE) { throw "compiling $name failed" }
-    Copy-Item "$PSScriptRoot\$name.inf" $pkg
-    # Windows only replaces an installed package when DriverVer is newer, so
-    # every build gets the current date and a time-based version.
-    & "$wdk\bin\$sdkVersion\x64\stampinf.exe" -f "$pkg\$name.inf" -d * -v * | Out-Null
-    if ($LASTEXITCODE) { throw "stampinf failed for $name" }
-}
+$sources = 'winstadia.c', 'stadia.c' | ForEach-Object { "$PSScriptRoot\$_" }
+& cl /nologo /W4 /O2 /MT /LD /std:c17 `
+    /D UMDF_VERSION_MAJOR=2 /D UMDF_VERSION_MINOR=$minor /D UMDF_USING_NTSTATUS `
+    /D UNICODE /D _UNICODE /D _WIN32_WINNT=0x0A00 `
+    /I "$wdk\Include\wdf\umdf\$umdfVersion" /I $obj `
+    /Fo"$obj\\" /Fe"$pkg\winstadia.dll" $sources `
+    /link /NOIMPLIB /NOEXP "$wdk\Lib\wdf\umdf\x64\$umdfVersion\WdfDriverStubUm.lib" ntdll.lib
+if ($LASTEXITCODE) { throw 'compiling failed' }
+Copy-Item "$PSScriptRoot\winstadia.inf" $pkg
+# Windows only replaces an installed package when DriverVer is newer, so every
+# build gets the current date and a time-based version.
+& "$wdk\bin\$sdkVersion\x64\stampinf.exe" -f "$pkg\winstadia.inf" -d * -v * | Out-Null
+if ($LASTEXITCODE) { throw 'stampinf failed' }
 & "$wdk\bin\$sdkVersion\x86\Inf2Cat.exe" /driver:$pkg /os:10_X64 /uselocaltime
 if ($LASTEXITCODE) { throw 'Inf2Cat failed' }
 

@@ -1,17 +1,15 @@
 # Installs (or with -Uninstall removes) the driver package built by build.ps1:
-# trusts the self-signed certificate on this machine, creates the root-enumerated
-# virtual device and puts the hide filter on Stadia controllers.
+# trusts the self-signed certificate on this machine and puts the driver on
+# Stadia controllers, connected now or later.
 # Elevates itself; output goes to out\install.log.
 param([switch]$Uninstall)
 
 $ErrorActionPreference = 'Stop'
 Import-Module Microsoft.PowerShell.Security
 
-$hardwareId = 'root\winstadia'
 $out = Join-Path $PSScriptRoot 'out'
 $inf = Join-Path $out 'pkg\winstadia.inf'
 $cer = Join-Path $out 'winstadia.cer'
-$devcon = Join-Path (Split-Path $PSScriptRoot -Parent) '.wdk\wdk\c\tools\10.0.26100.0\x64\devcon.exe'
 $stores = 'Cert:\LocalMachine\Root', 'Cert:\LocalMachine\TrustedPublisher'
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -27,14 +25,12 @@ if (-not ([Security.Principal.WindowsPrincipal]$identity).IsInRole($admin)) {
 Start-Transcript (Join-Path $out 'install.log') -Force | Out-Null
 try {
     $thumbprint = (New-Object Security.Cryptography.X509Certificates.X509Certificate2 $cer).Thumbprint
-    $installed = & $devcon hwids "@ROOT\HIDCLASS\*" | Select-String -SimpleMatch $hardwareId -Quiet
 
     if ($Uninstall) {
-        if ($installed) { & $devcon remove $hardwareId }
-        # Removing the hide filter returns the controller to the inbox driver.
+        # Returns the controller to the inbox HID driver.
         Get-ChildItem "$env:windir\INF\oem*.inf" |
-            Where-Object { Select-String -Path $_ -Pattern 'winstadia(hide)?\.dll' -Quiet } |
-            ForEach-Object { pnputil /delete-driver $_.Name /uninstall /force }
+            Where-Object { Select-String -Path $_ -Pattern 'winstadia\.dll' -Quiet } |
+            ForEach-Object { pnputil /delete-driver $_.Name /uninstall }
         foreach ($store in $stores) {
             Remove-Item "$store\$thumbprint" -ErrorAction SilentlyContinue
         }
@@ -42,14 +38,7 @@ try {
         foreach ($store in $stores) {
             Import-Certificate -FilePath $cer -CertStoreLocation $store | Out-Null
         }
-        if ($installed) {
-            & $devcon update $inf $hardwareId
-        } else {
-            & $devcon install $inf $hardwareId
-        }
-        "devcon exit code: $LASTEXITCODE"
-        # Applies to connected controllers now and to any that show up later.
-        pnputil /add-driver (Join-Path $out 'pkg\winstadiahide.inf') /install
+        pnputil /add-driver $inf /install
         "pnputil exit code: $LASTEXITCODE"
     }
 } catch {

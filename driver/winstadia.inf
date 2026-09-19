@@ -1,4 +1,6 @@
-; Virtual DualShock 4 HID minidriver (UMDF2).
+; HID transport minidriver (UMDF2) presenting a Stadia controller as a DualShock 4.
+; Takes the place of hidusb on the controller's USB HID interface. The stack is
+; mshidumdf.sys as function driver, this driver below it and WinUSB at the bottom.
 ; Depends on MsHidUmdf.inf, which was introduced in Windows build 22000.
 
 [Version]
@@ -6,7 +8,7 @@ Signature="$WINDOWS NT$"
 Class=HIDClass
 ClassGuid={745a17a0-74d3-11d0-b6fe-00a0c90f57da}
 Provider=%Provider%
-DriverVer=09/19/2026,1.0.0.0
+DriverVer=09/20/2026,1.0.0.0
 CatalogFile=winstadia.cat
 PnpLockdown=1
 
@@ -23,34 +25,30 @@ winstadia.dll=1
 %Provider%=Devices,NTamd64.10.0...22000
 
 [Devices.NTamd64.10.0...22000]
-%DeviceDesc%=Install,root\winstadia
+%DeviceDesc%=Install,USB\VID_18D1&PID_9400&MI_01
 
 [Install.NT]
 CopyFiles=DriverCopy
-Include=MsHidUmdf.inf
-Needs=MsHidUmdf.NT
-Include=WUDFRD.inf
-Needs=WUDFRD_LowerFilter.NT
+Include=MsHidUmdf.inf,WUDFRD.inf,winusb.inf
+Needs=MsHidUmdf.NT,WUDFRD_LowerFilter.NT,WINUSB_LowerFilter.NT
 
 [Install.NT.hw]
-Include=MsHidUmdf.inf
-Needs=MsHidUmdf.NT.hw
-Include=WUDFRD.inf
-Needs=WUDFRD_LowerFilter.NT.hw
+Include=MsHidUmdf.inf,WUDFRD.inf,winusb.inf
+Needs=MsHidUmdf.NT.hw,WUDFRD_LowerFilter.NT.hw,WINUSB_LowerFilter.NT.hw
 
 [Install.NT.Services]
-Include=MsHidUmdf.inf
-Needs=MsHidUmdf.NT.Services
-Include=WUDFRD.inf
-Needs=WUDFRD_LowerFilter.NT.Services
+Include=MsHidUmdf.inf,WUDFRD.inf,winusb.inf
+Needs=MsHidUmdf.NT.Services,WUDFRD_LowerFilter.NT.Services,WINUSB_LowerFilter.NT.Services
 
+; Lower filters attach in the order listed, so WinUSB ends up at the bottom.
 [Install.NT.Filters]
-Include=WUDFRD.inf
-Needs=WUDFRD_LowerFilter.NT.Filters
+Include=winusb.inf,WUDFRD.inf
+Needs=WINUSB_LowerFilter.NT.Filters,WUDFRD_LowerFilter.NT.Filters
 
 [Install.NT.Wdf]
 UmdfService="winstadia",UmdfInstall
 UmdfServiceOrder=winstadia
+UmdfDispatcher=WinUsb
 UmdfKernelModeClientPolicy=AllowKernelModeClients
 UmdfFileObjectPolicy=AllowNullAndUnknownFileObjects
 UmdfMethodNeitherAction=Copy
@@ -66,4 +64,4 @@ winstadia.dll
 [Strings]
 Provider="winstadia"
 DiskName="winstadia installation disk"
-DeviceDesc="winstadia virtual DualShock 4"
+DeviceDesc="Stadia controller (winstadia DualShock 4)"

@@ -1,7 +1,7 @@
-//! Stadia controller HID protocol (Bluetooth-mode firmware, USB or BLE transport).
+//! Stadia controller HID protocol (Bluetooth-mode firmware). The driver relays
+//! raw input reports for diagnostics.
 
 const INPUT_REPORT_ID: u8 = 0x03;
-const RUMBLE_REPORT_ID: u8 = 0x05;
 
 /// Minimum length of an input report, including the report ID byte.
 pub const INPUT_REPORT_LEN: usize = 10;
@@ -101,13 +101,6 @@ pub fn parse(report: &[u8]) -> Option<State> {
     })
 }
 
-/// Builds the rumble output report from motor speeds (0..=255).
-pub fn rumble_report(strong: u8, weak: u8) -> [u8; 5] {
-    let strong = (strong as u16 * 257).to_le_bytes();
-    let weak = (weak as u16 * 257).to_le_bytes();
-    [RUMBLE_REPORT_ID, strong[0], strong[1], weak[0], weak[1]]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,11 +129,5 @@ mod tests {
         assert_eq!(up.hat, 0);
         let stick = parse(&[0x03, 0x08, 0x00, 0x00, 0x29, 0x92, 0x80, 0x80, 0, 0, 0]).unwrap();
         assert_eq!(stick.left, (0x29, 0x92));
-    }
-
-    #[test]
-    fn rumble_covers_full_range() {
-        assert_eq!(rumble_report(0, 0), [0x05, 0, 0, 0, 0]);
-        assert_eq!(rumble_report(255, 1), [0x05, 0xFF, 0xFF, 0x01, 0x01]);
     }
 }

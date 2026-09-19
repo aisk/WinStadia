@@ -1,7 +1,8 @@
-// UMDF2 HID minidriver exposing a virtual DualShock 4.
+// UMDF2 HID transport minidriver that presents a Stadia controller as a
+// DualShock 4.
 //
-// Input comes from the bridge thread (bridge.c), which reads the physical
-// Stadia controller; rumble written by games goes back the same way.
+// It replaces hidusb on the controller's HID interface. Input arrives from the
+// USB side (stadia.c); rumble written by games goes back the same way.
 
 #include "winstadia.h"
 #include <hidport.h>
@@ -15,7 +16,7 @@
 #define REPORT_ID_CALIBRATION 0x02
 #define REPORT_ID_SERIAL 0x12
 #define REPORT_ID_FIRMWARE 0xA3
-// Not part of a real DS4: bridge state for diagnostics, see GetFeature.
+// Not part of a real DS4: driver state for diagnostics, see GetFeature.
 #define REPORT_ID_STATUS 0xE1
 
 #define STATUS_REPORT_LEN 64
@@ -114,13 +115,11 @@ static const HID_DEVICE_ATTRIBUTES DeviceAttributes = {
 };
 
 // Sticks centered, hat released.
-const UCHAR IdleControls[PAD_CONTROLS_LEN] = {0x80, 0x80, 0x80, 0x80, 0x08};
+static const UCHAR IdleControls[PAD_CONTROLS_LEN] = {0x80, 0x80, 0x80, 0x80, 0x08};
 
 DRIVER_INITIALIZE DriverEntry;
 EVT_WDF_DRIVER_DEVICE_ADD EvtDeviceAdd;
 EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL EvtIoDeviceControl;
-EVT_WDF_DEVICE_SELF_MANAGED_IO_INIT EvtSelfManagedIoInit;
-EVT_WDF_DEVICE_SELF_MANAGED_IO_CLEANUP EvtSelfManagedIoCleanup;
 
 static NTSTATUS
 CopyToRequest(WDFREQUEST Request, const VOID *Source, size_t Length)
@@ -236,11 +235,7 @@ WriteReport(PDEVICE_CONTEXT Context, WDFREQUEST Request)
     }
 
     if (length > 5 && (report[1] & OUTPUT_FLAG_RUMBLE)) {
-        AcquireSRWLockExclusive(&Context->Lock);
-        Context->RumbleWeak = report[4];
-        Context->RumbleStrong = report[5];
-        ReleaseSRWLockExclusive(&Context->Lock);
-        SetEvent(Context->RumbleEvent);
+        StadiaSetRumble(Context, report[5], report[4]);
     }
     WdfRequestSetInformation(Request, length);
     return STATUS_SUCCESS;
@@ -270,12 +265,14 @@ GetFeature(PDEVICE_CONTEXT Context, WDFREQUEST Request)
         length = 49;
         break;
     case REPORT_ID_STATUS:
-        // [1] bridge state, [2] rumble failed, [3..7] last Win32 error (LE)
+        // [1] rumble failed, [2..6] last error NTSTATUS (LE), [6] length of
+        // the last raw Stadia input report, [7..] that report
         length = STATUS_REPORT_LEN;
         AcquireSRWLockShared(&Context->Lock);
-        report[1] = Context->BridgeState;
-        report[2] = Context->RumbleFailed;
-        RtlCopyMemory(report + 3, &Context->BridgeError, sizeof(ULONG));
+        report[1] = Context->RumbleFailed;
+        RtlCopyMemory(report + 2, &Context->LastError, sizeof(NTSTATUS));
+        report[6] = Context->RawReportLength;
+        RtlCopyMemory(report + 7, Context->RawReport, Context->RawReportLength);
         ReleaseSRWLockShared(&Context->Lock);
         break;
     default:
@@ -376,18 +373,6 @@ EvtIoDeviceControl(
 }
 
 NTSTATUS
-EvtSelfManagedIoInit(WDFDEVICE Device)
-{
-    return BridgeStart(GetDeviceContext(Device));
-}
-
-VOID
-EvtSelfManagedIoCleanup(WDFDEVICE Device)
-{
-    BridgeStop(GetDeviceContext(Device));
-}
-
-NTSTATUS
 EvtDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
 {
     WDF_PNPPOWER_EVENT_CALLBACKS pnpCallbacks;
@@ -404,8 +389,9 @@ EvtDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
     WdfFdoInitSetFilter(DeviceInit);
 
     WDF_PNPPOWER_EVENT_CALLBACKS_INIT(&pnpCallbacks);
-    pnpCallbacks.EvtDeviceSelfManagedIoInit = EvtSelfManagedIoInit;
-    pnpCallbacks.EvtDeviceSelfManagedIoCleanup = EvtSelfManagedIoCleanup;
+    pnpCallbacks.EvtDevicePrepareHardware = StadiaPrepareHardware;
+    pnpCallbacks.EvtDeviceD0Entry = StadiaD0Entry;
+    pnpCallbacks.EvtDeviceD0Exit = StadiaD0Exit;
     WdfDeviceInitSetPnpPowerEventCallbacks(DeviceInit, &pnpCallbacks);
 
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, DEVICE_CONTEXT);
@@ -415,10 +401,12 @@ EvtDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
     }
     context = GetDeviceContext(device);
     InitializeSRWLock(&context->Lock);
+    InitializeSRWLock(&context->RumbleLock);
     RtlCopyMemory(context->Controls, IdleControls, PAD_CONTROLS_LEN);
     BuildInputReport(context);
 
-    WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchSequential);
+    // Parallel, so that a rumble write on the wire does not hold up reads.
+    WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchParallel);
     queueConfig.EvtIoDeviceControl = EvtIoDeviceControl;
     status = WdfIoQueueCreate(device, &queueConfig, WDF_NO_OBJECT_ATTRIBUTES, &queue);
     if (!NT_SUCCESS(status)) {

@@ -7,4 +7,3 @@ license = "GPL-3.0-only"
 [dependencies]
 ctrlc = "3.5.2"
 hidapi = { version = "2.6.7", default-features = false, features = ["windows-native"] }
-windows-sys = { version = "0.61.2", features = ["Win32_Devices_DeviceAndDriverInstallation", "Win32_Devices_HumanInterfaceDevice", "Win32_Security", "Win32_Storage_FileSystem"] }
