@@ -1,13 +1,12 @@
-# Builds, packages and signs the UMDF driver into driver\out\pkg.
+# Builds the UMDF driver package into driver\out\pkg. It is left unsigned;
+# install.ps1 signs it on the machine it gets installed on.
 # Uses the NuGet WDK unpacked in .wdk (no system-wide WDK install needed).
 $ErrorActionPreference = 'Stop'
-Import-Module Microsoft.PowerShell.Security
 
 $root = Split-Path $PSScriptRoot -Parent
 $wdk = Join-Path $root '.wdk\wdk\c'
 $sdkVersion = '10.0.26100.0'
 $umdfVersion = '2.31'
-$certSubject = 'CN=winstadia driver signing'
 
 if (-not (Test-Path $wdk)) {
     $wdkPackage = 'microsoft.windows.wdk.x64'
@@ -30,7 +29,7 @@ New-Item -ItemType Directory -Force $obj, $pkg | Out-Null
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 if (-not $vs) { throw 'MSVC build tools not found' }
-cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
+cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul 2>&1 && set" | ForEach-Object {
     if ($_ -match '^([^=]+)=(.*)$') { Set-Item "env:$($Matches[1])" $Matches[2] }
 }
 
@@ -52,18 +51,5 @@ Copy-Item "$PSScriptRoot\winstadia.inf" $pkg
 # build gets the current date and a time-based version.
 & "$wdk\bin\$sdkVersion\x64\stampinf.exe" -f "$pkg\winstadia.inf" -d * -v * | Out-Null
 if ($LASTEXITCODE) { throw 'stampinf failed' }
-& "$wdk\bin\$sdkVersion\x86\Inf2Cat.exe" /driver:$pkg /os:10_X64 /uselocaltime
-if ($LASTEXITCODE) { throw 'Inf2Cat failed' }
-
-# Self-signed code signing certificate; install.ps1 makes this machine trust it.
-$cert = Get-ChildItem Cert:\CurrentUser\My | Where-Object Subject -eq $certSubject | Select-Object -First 1
-if (-not $cert) {
-    $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject $certSubject `
-        -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(10)
-}
-Export-Certificate -Cert $cert -FilePath "$out\winstadia.cer" | Out-Null
-
-& signtool sign /q /fd SHA256 /sha1 $cert.Thumbprint (Get-ChildItem $pkg -Include *.dll, *.cat -Recurse).FullName
-if ($LASTEXITCODE) { throw 'signing failed' }
 
 Write-Host "Driver package ready: $pkg"
