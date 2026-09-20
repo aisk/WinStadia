@@ -95,6 +95,12 @@ try {
             # it got back then.
             Remove-Trust { $_.Thumbprint -eq $thumbprint }
         }
+        # 259 = the package was staged but no controller was connected to
+        # install onto yet. Checked after the cleanup so a failed install
+        # still gets its certificate trust removed.
+        if ($exitCode -notin 0, 259, 3010) {
+            throw "pnputil /add-driver failed with exit code $exitCode"
+        }
         if ($exitCode -eq 3010) {
             # Something held the controller open, so it could not restart.
             'Reconnect the controller to finish. Over Bluetooth, switch Bluetooth off and on.'
