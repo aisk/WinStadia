@@ -24,7 +24,7 @@ fn open_pad(api: &HidApi) -> Result<HidDevice> {
                 && d.product_id() == pad::PRODUCT_ID
                 && d.serial_number() == Some(pad::SERIAL)
         })
-        .ok_or("winstadia controller not found, is the controller plugged in and the driver installed?")?;
+        .ok_or("winstadia controller not found, is the controller connected and the driver installed?")?;
     Ok(info.open_device(api)?)
 }
 

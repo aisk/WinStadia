@@ -39,7 +39,7 @@ cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
 Copy-Item "$wdk\Include\$sdkVersion\km\hidport.h" $obj
 
 $minor = $umdfVersion.Split('.')[1]
-$sources = 'winstadia.c', 'stadia.c' | ForEach-Object { "$PSScriptRoot\$_" }
+$sources = 'winstadia.c', 'stadia.c', 'usb.c', 'bluetooth.c' | ForEach-Object { "$PSScriptRoot\$_" }
 & cl /nologo /W4 /O2 /MT /LD /std:c17 `
     /D UMDF_VERSION_MAJOR=2 /D UMDF_VERSION_MINOR=$minor /D UMDF_USING_NTSTATUS `
     /D UNICODE /D _UNICODE /D _WIN32_WINNT=0x0A00 `

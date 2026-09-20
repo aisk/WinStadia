@@ -1,10 +1,10 @@
 // UMDF2 HID transport minidriver that presents a Stadia controller as an Xbox
 // Wireless Controller, in the HID format those use over Bluetooth.
 //
-// It replaces hidusb on the controller's HID interface. The inbox xinputhid
-// filter sits above this stack and turns the HID reports into XInput, as it
-// does for the real thing. Input arrives from the USB side (stadia.c); rumble
-// written by games goes back the same way.
+// The inbox xinputhid filter sits above this stack and turns the HID reports
+// into XInput, as it does for the real thing. Input arrives from the
+// controller through stadia.c and the transport below it, USB or Bluetooth;
+// rumble written by games goes back the same way.
 
 #include "winstadia.h"
 #include <hidport.h>
@@ -479,6 +479,22 @@ EvtIoDeviceControl(
     }
 }
 
+// The INF puts the driver on the controller's USB HID interface and on its
+// HID service on Bluetooth LE.
+static BOOLEAN
+IsBluetooth(PWDFDEVICE_INIT DeviceInit)
+{
+    WDFMEMORY memory;
+    BOOLEAN bluetooth = FALSE;
+
+    if (NT_SUCCESS(WdfFdoInitAllocAndQueryProperty(DeviceInit, DevicePropertyEnumeratorName, NonPagedPoolNx,
+                                                   WDF_NO_OBJECT_ATTRIBUTES, &memory))) {
+        bluetooth = _wcsicmp(WdfMemoryGetBuffer(memory, NULL), L"BTHLEDevice") == 0;
+        WdfObjectDelete(memory);
+    }
+    return bluetooth;
+}
+
 NTSTATUS
 EvtDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
 {
@@ -488,12 +504,14 @@ EvtDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
     WDFDEVICE device;
     WDFQUEUE queue;
     PDEVICE_CONTEXT context;
+    BOOLEAN bluetooth;
     NTSTATUS status;
 
     UNREFERENCED_PARAMETER(Driver);
 
     // mshidumdf.sys is the function driver, this driver sits below it.
     WdfFdoInitSetFilter(DeviceInit);
+    bluetooth = IsBluetooth(DeviceInit);
 
     WDF_PNPPOWER_EVENT_CALLBACKS_INIT(&pnpCallbacks);
     pnpCallbacks.EvtDevicePrepareHardware = StadiaPrepareHardware;
@@ -507,6 +525,7 @@ EvtDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
         return status;
     }
     context = GetDeviceContext(device);
+    context->Transport = bluetooth ? &BluetoothTransport : &UsbTransport;
     InitializeSRWLock(&context->Lock);
     InitializeSRWLock(&context->RumbleLock);
     RtlCopyMemory(context->Controls, IdleControls, PAD_CONTROLS_LEN);

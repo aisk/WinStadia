@@ -1,15 +1,8 @@
-// USB side: reads Stadia input reports from the interrupt endpoint, translates
-// them to Xbox controls and sends rumble the other way. WinUSB sits below this
-// driver and carries the transfers.
+// Stadia protocol: translates the controller's input reports to Xbox controls
+// and rumble to its output report. The transports (usb.c, bluetooth.c) carry
+// the reports.
 
 #include "winstadia.h"
-
-#define WRITE_TIMEOUT_MS 500
-
-// HID class request and report type, for output reports sent through the
-// control endpoint.
-#define HID_REQUEST_SET_REPORT 0x09
-#define HID_REPORT_TYPE_OUTPUT 0x02
 
 // Stadia input report layout:
 //   [0] report ID (0x03)
@@ -58,9 +51,6 @@
 
 #define BIT(source, mask, target) (((source) & (mask)) ? (target) : 0)
 
-EVT_WDF_USB_READER_COMPLETION_ROUTINE EvtInputReport;
-EVT_WDF_USB_READERS_FAILED EvtReadersFailed;
-
 static VOID
 PutUshort(UCHAR *Target, ULONG Value)
 {
@@ -98,8 +88,8 @@ MapControls(const UCHAR *Stadia, UCHAR *Controls)
     Controls[PAD_GUIDE_INDEX] = BIT(b2, STADIA_B2_STADIA, 1);
 }
 
-static VOID
-RecordError(PDEVICE_CONTEXT Context, NTSTATUS Status)
+VOID
+StadiaRecordError(PDEVICE_CONTEXT Context, NTSTATUS Status)
 {
     AcquireSRWLockExclusive(&Context->Lock);
     Context->LastError = Status;
@@ -107,68 +97,32 @@ RecordError(PDEVICE_CONTEXT Context, NTSTATUS Status)
 }
 
 VOID
-EvtInputReport(WDFUSBPIPE Pipe, WDFMEMORY Buffer, size_t NumBytesTransferred, WDFCONTEXT Context)
+StadiaInputReport(PDEVICE_CONTEXT Context, const UCHAR *Report, size_t Length)
 {
-    PDEVICE_CONTEXT context = Context;
-    const UCHAR *report = WdfMemoryGetBuffer(Buffer, NULL);
     UCHAR controls[PAD_CONTROLS_LEN];
 
-    UNREFERENCED_PARAMETER(Pipe);
+    AcquireSRWLockExclusive(&Context->Lock);
+    Context->RawReportLength = (UCHAR)min(Length, RAW_REPORT_MAX);
+    RtlCopyMemory(Context->RawReport, Report, Context->RawReportLength);
+    ReleaseSRWLockExclusive(&Context->Lock);
 
-    AcquireSRWLockExclusive(&context->Lock);
-    context->RawReportLength = (UCHAR)min(NumBytesTransferred, RAW_REPORT_MAX);
-    RtlCopyMemory(context->RawReport, report, context->RawReportLength);
-    ReleaseSRWLockExclusive(&context->Lock);
-
-    if (NumBytesTransferred >= STADIA_INPUT_REPORT_LEN && report[0] == STADIA_INPUT_REPORT_ID) {
-        MapControls(report, controls);
-        PadPublishControls(context, controls);
+    if (Length >= STADIA_INPUT_REPORT_LEN && Report[0] == STADIA_INPUT_REPORT_ID) {
+        MapControls(Report, controls);
+        PadPublishControls(Context, controls);
     }
-}
-
-BOOLEAN
-EvtReadersFailed(WDFUSBPIPE Pipe, NTSTATUS Status, USBD_STATUS UsbdStatus)
-{
-    UNREFERENCED_PARAMETER(UsbdStatus);
-
-    RecordError(GetDeviceContext(WdfIoTargetGetDevice(WdfUsbTargetPipeGetIoTarget(Pipe))), Status);
-    // Have the framework reset the pipe and restart the reader.
-    return TRUE;
-}
-
-static NTSTATUS
-SendRumble(PDEVICE_CONTEXT Context, UCHAR Strong, UCHAR Weak)
-{
-    // Motor speeds are 16 bit little endian; x * 257 scales 8 to 16 bits.
-    UCHAR report[] = {STADIA_RUMBLE_REPORT_ID, Strong, Strong, Weak, Weak};
-    WDF_MEMORY_DESCRIPTOR memory;
-    WDF_REQUEST_SEND_OPTIONS options;
-    WDF_USB_CONTROL_SETUP_PACKET setup;
-
-    WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(&memory, report, sizeof(report));
-    WDF_REQUEST_SEND_OPTIONS_INIT(&options, WDF_REQUEST_SEND_OPTION_TIMEOUT);
-    WDF_REQUEST_SEND_OPTIONS_SET_TIMEOUT(&options, WDF_REL_TIMEOUT_IN_MS(WRITE_TIMEOUT_MS));
-
-    if (Context->OutputPipe != NULL) {
-        return WdfUsbTargetPipeWriteSynchronously(Context->OutputPipe, NULL, &options, &memory, NULL);
-    }
-    WDF_USB_CONTROL_SETUP_PACKET_INIT_CLASS(&setup, BmRequestHostToDevice, BmRequestToInterface,
-                                            HID_REQUEST_SET_REPORT,
-                                            (HID_REPORT_TYPE_OUTPUT << 8) | STADIA_RUMBLE_REPORT_ID,
-                                            Context->InterfaceNumber);
-    return WdfUsbTargetDeviceSendControlTransferSynchronously(Context->UsbDevice, NULL, &options, &setup, &memory,
-                                                              NULL);
 }
 
 VOID
 StadiaSetRumble(PDEVICE_CONTEXT Context, UCHAR Strong, UCHAR Weak)
 {
+    // Motor speeds are 16 bit little endian; x * 257 scales 8 to 16 bits.
+    UCHAR report[] = {STADIA_RUMBLE_REPORT_ID, Strong, Strong, Weak, Weak};
     NTSTATUS status = STATUS_SUCCESS;
 
     // Games repeat the same output report a lot; only changes reach the wire.
     AcquireSRWLockExclusive(&Context->RumbleLock);
     if (Strong != Context->RumbleStrong || Weak != Context->RumbleWeak) {
-        status = SendRumble(Context, Strong, Weak);
+        status = Context->Transport->SendOutputReport(Context, report, sizeof(report));
         if (NT_SUCCESS(status)) {
             Context->RumbleStrong = Strong;
             Context->RumbleWeak = Weak;
@@ -187,59 +141,10 @@ StadiaSetRumble(PDEVICE_CONTEXT Context, UCHAR Strong, UCHAR Weak)
 NTSTATUS
 StadiaPrepareHardware(WDFDEVICE Device, WDFCMRESLIST ResourcesRaw, WDFCMRESLIST ResourcesTranslated)
 {
-    PDEVICE_CONTEXT context = GetDeviceContext(Device);
-    WDF_USB_DEVICE_CREATE_CONFIG createConfig;
-    WDF_USB_DEVICE_SELECT_CONFIG_PARAMS selectParams;
-    WDF_USB_CONTINUOUS_READER_CONFIG readerConfig;
-    WDF_USB_PIPE_INFORMATION pipeInfo;
-    WDFUSBINTERFACE usbInterface;
-    ULONG inputPacketSize = 0;
-    NTSTATUS status;
-
     UNREFERENCED_PARAMETER(ResourcesRaw);
     UNREFERENCED_PARAMETER(ResourcesTranslated);
 
-    // Survives a stop and restart of the device, so set it up only once.
-    if (context->UsbDevice != NULL) {
-        return STATUS_SUCCESS;
-    }
-
-    WDF_USB_DEVICE_CREATE_CONFIG_INIT(&createConfig, USBD_CLIENT_CONTRACT_VERSION_602);
-    status = WdfUsbTargetDeviceCreateWithParameters(Device, &createConfig, WDF_NO_OBJECT_ATTRIBUTES,
-                                                    &context->UsbDevice);
-    if (!NT_SUCCESS(status)) {
-        return status;
-    }
-    WDF_USB_DEVICE_SELECT_CONFIG_PARAMS_INIT_SINGLE_INTERFACE(&selectParams);
-    status = WdfUsbTargetDeviceSelectConfig(context->UsbDevice, WDF_NO_OBJECT_ATTRIBUTES, &selectParams);
-    if (!NT_SUCCESS(status)) {
-        return status;
-    }
-
-    usbInterface = selectParams.Types.SingleInterface.ConfiguredUsbInterface;
-    context->InterfaceNumber = WdfUsbInterfaceGetInterfaceNumber(usbInterface);
-    for (UCHAR i = 0; i < WdfUsbInterfaceGetNumConfiguredPipes(usbInterface); i++) {
-        WDFUSBPIPE pipe;
-
-        WDF_USB_PIPE_INFORMATION_INIT(&pipeInfo);
-        pipe = WdfUsbInterfaceGetConfiguredPipe(usbInterface, i, &pipeInfo);
-        if (pipeInfo.PipeType != WdfUsbPipeTypeInterrupt) {
-            continue;
-        }
-        if (WdfUsbTargetPipeIsInEndpoint(pipe) && context->InputPipe == NULL) {
-            context->InputPipe = pipe;
-            inputPacketSize = pipeInfo.MaximumPacketSize;
-        } else if (WdfUsbTargetPipeIsOutEndpoint(pipe) && context->OutputPipe == NULL) {
-            context->OutputPipe = pipe;
-        }
-    }
-    if (context->InputPipe == NULL) {
-        return STATUS_DEVICE_CONFIGURATION_ERROR;
-    }
-
-    WDF_USB_CONTINUOUS_READER_CONFIG_INIT(&readerConfig, EvtInputReport, context, inputPacketSize);
-    readerConfig.EvtUsbTargetPipeReadersFailed = EvtReadersFailed;
-    return WdfUsbTargetPipeConfigContinuousReader(context->InputPipe, &readerConfig);
+    return GetDeviceContext(Device)->Transport->PrepareHardware(Device);
 }
 
 NTSTATUS
@@ -255,7 +160,7 @@ StadiaD0Entry(WDFDEVICE Device, WDF_POWER_DEVICE_STATE PreviousState)
     context->RumbleWeak = 0;
     ReleaseSRWLockExclusive(&context->RumbleLock);
 
-    return WdfIoTargetStart(WdfUsbTargetPipeGetIoTarget(context->InputPipe));
+    return context->Transport->Start(context);
 }
 
 NTSTATUS
@@ -265,8 +170,8 @@ StadiaD0Exit(WDFDEVICE Device, WDF_POWER_DEVICE_STATE TargetState)
 
     UNREFERENCED_PARAMETER(TargetState);
 
-    WdfIoTargetStop(WdfUsbTargetPipeGetIoTarget(context->InputPipe), WdfIoTargetCancelSentIo);
     // Fails harmlessly when the controller is already gone.
     StadiaSetRumble(context, 0, 0);
+    context->Transport->Stop(context);
     return STATUS_SUCCESS;
 }

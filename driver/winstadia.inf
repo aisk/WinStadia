@@ -1,8 +1,10 @@
 ; HID transport minidriver (UMDF2) presenting a Stadia controller as an Xbox
-; Wireless Controller. Takes the place of hidusb on the controller's USB HID
-; interface. The stack is the inbox xinputhid filter on top, mshidumdf.sys as
-; function driver, this driver below it and WinUSB at the bottom. That mirrors
-; what xinputhid.inf sets up for Xbox controllers on Bluetooth.
+; Wireless Controller. The stack is the inbox xinputhid filter on top,
+; mshidumdf.sys as function driver and this driver below it. That mirrors what
+; xinputhid.inf sets up for Xbox controllers on Bluetooth.
+; On USB the driver takes the place of hidusb on the controller's HID
+; interface, with WinUSB at the bottom. On Bluetooth LE it sits on top of the
+; inbox HID over GATT driver, in the same driver host.
 ; Depends on MsHidUmdf.inf, which was introduced in Windows build 22000.
 
 [Version]
@@ -28,6 +30,7 @@ winstadia.dll=1
 
 [Devices.NTamd64.10.0...22000]
 %DeviceDesc%=Install,USB\VID_18D1&PID_9400&MI_01
+%DeviceDesc%=InstallBluetooth,BTHLEDevice\{00001812-0000-1000-8000-00805f9b34fb}_Dev_VID&0218d1_PID&9400
 
 [Install.NT]
 CopyFiles=DriverCopy
@@ -48,6 +51,25 @@ AddService=xinputhid,0x000001f8,XInput_Service
 [Install.NT.Filters]
 Include=winusb.inf,WUDFRD.inf
 Needs=WINUSB_LowerFilter.NT.Filters,WUDFRD_LowerFilter.NT.Filters
+AddFilter=xinputhid,,XInput_FilterPosition
+
+; What hidbthle.inf installs, plus xinputhid on top.
+[InstallBluetooth.NT]
+CopyFiles=DriverCopy
+AddReg=XInput_AddReg
+Include=hidbthle.inf
+Needs=HidBthLE.NT
+
+[InstallBluetooth.NT.hw]
+Include=hidbthle.inf
+Needs=HidBthLE.NT.hw
+
+[InstallBluetooth.NT.Services]
+Include=hidbthle.inf
+Needs=HidBthLE.NT.Services
+AddService=xinputhid,0x000001f8,XInput_Service
+
+[InstallBluetooth.NT.Filters]
 AddFilter=xinputhid,,XInput_FilterPosition
 
 [XInput_FilterPosition]
@@ -78,6 +100,22 @@ UmdfKernelModeClientPolicy=AllowKernelModeClients
 UmdfFileObjectPolicy=AllowNullAndUnknownFileObjects
 UmdfMethodNeitherAction=Copy
 UmdfFsContextUsePolicy=CanUseFsContext2
+
+; Same as HidBthLE.NT.Wdf in hidbthle.inf, with this driver added above the
+; inbox one. The order lists the drivers from the bottom up.
+[InstallBluetooth.NT.Wdf]
+UmdfService="HidOverGatt",HidOverGattInstall
+UmdfService="winstadia",UmdfInstall
+UmdfServiceOrder=HidOverGatt,winstadia
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+UmdfFileObjectPolicy=AllowNullAndUnknownFileObjects
+UmdfMethodNeitherAction=Copy
+UmdfFsContextUsePolicy=CanUseFsContext2
+UmdfHostPriority=PriorityHigh
+
+[HidOverGattInstall]
+UmdfLibraryVersion=2.15.0
+ServiceBinary="%12%\UMDF\Microsoft.Bluetooth.Profiles.HidOverGatt.dll"
 
 [UmdfInstall]
 UmdfLibraryVersion=2.31.0

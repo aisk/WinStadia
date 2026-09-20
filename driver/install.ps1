@@ -42,7 +42,7 @@ try {
         "pnputil exit code: $LASTEXITCODE"
         if ($LASTEXITCODE -eq 3010) {
             # Something held the controller open, so it could not restart.
-            'Unplug the controller and plug it back in to finish.'
+            'Reconnect the controller to finish.'
         }
     }
 } catch {
