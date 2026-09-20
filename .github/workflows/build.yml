@@ -14,26 +14,27 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build the driver package
         shell: powershell
         run: .\driver\build.ps1
 
       # The package stays unsigned, install.ps1 signs it on the user's machine.
+      # Windows PowerShell would write backslashes into the archive.
       - name: Pack
-        shell: powershell
+        shell: pwsh
         run: >
           Compress-Archive -DestinationPath WinStadia.zip -Path
           driver\out\pkg, driver\install.ps1, driver\status.ps1, README.md, LICENSE
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: WinStadia
           path: WinStadia.zip
 
       # Lets anyone check that the download was built here from this commit.
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         if: startsWith(github.ref, 'refs/tags/')
         with:
           subject-path: WinStadia.zip
