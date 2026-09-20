@@ -420,7 +420,7 @@ GetString(WDFREQUEST Request)
         return CopyToRequest(Request, product, sizeof(product));
     }
     case HID_STRING_ID_ISERIALNUMBER: {
-        static const WCHAR serial[] = L"winstadia";
+        static const WCHAR serial[] = L"WinStadia";
         return CopyToRequest(Request, serial, sizeof(serial));
     }
     default:

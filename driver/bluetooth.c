@@ -6,11 +6,10 @@
 #include "winstadia.h"
 #include <hidport.h>
 
-#define REQUEST_TIMEOUT_MS 2000
+#define WRITE_TIMEOUT_MS 2000
 #define RETRY_DELAY_MS 500
 // Room for any input report of the controller.
 #define READ_BUFFER_LEN 64
-#define DESCRIPTOR_BUFFER_LEN 1024
 
 EVT_WDF_REQUEST_COMPLETION_ROUTINE EvtBluetoothReadComplete;
 EVT_WDF_TIMER EvtBluetoothRetryTimer;
@@ -109,31 +108,22 @@ EvtBluetoothRetryTimer(WDFTIMER Timer)
 }
 
 static NTSTATUS
-SendIoctl(PDEVICE_CONTEXT Context, ULONG IoControlCode, PVOID Input, size_t InputLength, PVOID Output,
-          size_t OutputLength)
-{
-    WDF_MEMORY_DESCRIPTOR input;
-    WDF_MEMORY_DESCRIPTOR output;
-    WDF_REQUEST_SEND_OPTIONS options;
-
-    WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(&input, Input, (ULONG)InputLength);
-    WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(&output, Output, (ULONG)OutputLength);
-    WDF_REQUEST_SEND_OPTIONS_INIT(&options, WDF_REQUEST_SEND_OPTION_TIMEOUT);
-    WDF_REQUEST_SEND_OPTIONS_SET_TIMEOUT(&options, WDF_REL_TIMEOUT_IN_MS(REQUEST_TIMEOUT_MS));
-
-    return WdfIoTargetSendIoctlSynchronously(Context->LowerDriver, NULL, IoControlCode,
-                                             InputLength != 0 ? &input : NULL, OutputLength != 0 ? &output : NULL,
-                                             &options, NULL);
-}
-
-static NTSTATUS
 BluetoothSendOutputReport(PDEVICE_CONTEXT Context, PUCHAR Report, size_t Length)
 {
     // A UMDF HID minidriver finds the report in the input buffer and the
     // report ID in the length of the output buffer.
     UCHAR unused[UCHAR_MAX];
+    WDF_MEMORY_DESCRIPTOR input;
+    WDF_MEMORY_DESCRIPTOR output;
+    WDF_REQUEST_SEND_OPTIONS options;
 
-    return SendIoctl(Context, IOCTL_HID_WRITE_REPORT, Report, Length, unused, Report[0]);
+    WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(&input, Report, (ULONG)Length);
+    WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(&output, unused, Report[0]);
+    WDF_REQUEST_SEND_OPTIONS_INIT(&options, WDF_REQUEST_SEND_OPTION_TIMEOUT);
+    WDF_REQUEST_SEND_OPTIONS_SET_TIMEOUT(&options, WDF_REL_TIMEOUT_IN_MS(WRITE_TIMEOUT_MS));
+
+    return WdfIoTargetSendIoctlSynchronously(Context->LowerDriver, NULL, IOCTL_HID_WRITE_REPORT, &input, &output,
+                                             &options, NULL);
 }
 
 static NTSTATUS
@@ -179,25 +169,9 @@ BluetoothPrepareHardware(WDFDEVICE Device)
 static NTSTATUS
 BluetoothStart(PDEVICE_CONTEXT Context)
 {
-    static const ULONG descriptorRequests[] = {
-        IOCTL_HID_GET_DEVICE_DESCRIPTOR,
-        IOCTL_HID_GET_REPORT_DESCRIPTOR,
-        IOCTL_HID_GET_DEVICE_ATTRIBUTES,
-    };
-    UCHAR descriptor[DESCRIPTOR_BUFFER_LEN];
     NTSTATUS status = WdfIoTargetStart(Context->LowerDriver);
     if (!NT_SUCCESS(status)) {
         return status;
-    }
-
-    // The driver below sees the requests it would get from the HID class
-    // driver, in case it sets itself up along the way. The answers describe
-    // the Stadia controller and are of no use here.
-    for (int i = 0; i < ARRAYSIZE(descriptorRequests); i++) {
-        status = SendIoctl(Context, descriptorRequests[i], NULL, 0, descriptor, sizeof(descriptor));
-        if (!NT_SUCCESS(status)) {
-            StadiaRecordError(Context, status);
-        }
     }
 
     AcquireSRWLockExclusive(&Context->Lock);

@@ -29,26 +29,26 @@ winstadia.dll=1
 %Provider%=Devices,NTamd64.10.0...22000
 
 [Devices.NTamd64.10.0...22000]
-%DeviceDesc%=Install,USB\VID_18D1&PID_9400&MI_01
+%DeviceDesc%=InstallUsb,USB\VID_18D1&PID_9400&MI_01
 %DeviceDesc%=InstallBluetooth,BTHLEDevice\{00001812-0000-1000-8000-00805f9b34fb}_Dev_VID&0218d1_PID&9400
 
-[Install.NT]
+[InstallUsb.NT]
 CopyFiles=DriverCopy
 AddReg=XInput_AddReg
 Include=MsHidUmdf.inf,WUDFRD.inf,winusb.inf
 Needs=MsHidUmdf.NT,WUDFRD_LowerFilter.NT,WINUSB_LowerFilter.NT
 
-[Install.NT.hw]
+[InstallUsb.NT.hw]
 Include=MsHidUmdf.inf,WUDFRD.inf,winusb.inf
 Needs=MsHidUmdf.NT.hw,WUDFRD_LowerFilter.NT.hw,WINUSB_LowerFilter.NT.hw
 
-[Install.NT.Services]
+[InstallUsb.NT.Services]
 Include=MsHidUmdf.inf,WUDFRD.inf,winusb.inf
 Needs=MsHidUmdf.NT.Services,WUDFRD_LowerFilter.NT.Services,WINUSB_LowerFilter.NT.Services
 AddService=xinputhid,0x000001f8,XInput_Service
 
 ; Lower filters attach in the order listed, so WinUSB ends up at the bottom.
-[Install.NT.Filters]
+[InstallUsb.NT.Filters]
 Include=winusb.inf,WUDFRD.inf
 Needs=WINUSB_LowerFilter.NT.Filters,WUDFRD_LowerFilter.NT.Filters
 AddFilter=xinputhid,,XInput_FilterPosition
@@ -92,7 +92,7 @@ AddReg=XInput_ServiceAddReg
 HKR,,"DevicePropertyFlags",0x00010001,0xE
 HKR,,"ConfigFlags",0x00010001,1
 
-[Install.NT.Wdf]
+[InstallUsb.NT.Wdf]
 UmdfService="winstadia",UmdfInstall
 UmdfServiceOrder=winstadia
 UmdfDispatcher=WinUsb
@@ -125,7 +125,7 @@ ServiceBinary="%13%\winstadia.dll"
 winstadia.dll
 
 [Strings]
-Provider="winstadia"
-DiskName="winstadia installation disk"
-DeviceDesc="Stadia controller (winstadia XInput)"
+Provider="WinStadia"
+DiskName="WinStadia installation disk"
+DeviceDesc="Stadia controller (WinStadia)"
 XInputServiceName="XINPUT HID Filter Driver"

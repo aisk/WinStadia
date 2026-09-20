@@ -1,9 +1,0 @@
-[package]
-name = "winstadia"
-version = "0.1.0"
-edition = "2024"
-license = "GPL-3.0-only"
-
-[dependencies]
-ctrlc = "3.5.2"
-hidapi = { version = "2.6.7", default-features = false, features = ["windows-native"] }
