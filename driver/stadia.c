@@ -117,16 +117,18 @@ StadiaSetRumble(PDEVICE_CONTEXT Context, UCHAR Strong, UCHAR Weak)
 {
     // Motor speeds are 16 bit little endian; x * 257 scales 8 to 16 bits.
     UCHAR report[] = {STADIA_RUMBLE_REPORT_ID, Strong, Strong, Weak, Weak};
-    NTSTATUS status = STATUS_SUCCESS;
+    NTSTATUS status;
 
     // Games repeat the same output report a lot; only changes reach the wire.
     AcquireSRWLockExclusive(&Context->RumbleLock);
-    if (Strong != Context->RumbleStrong || Weak != Context->RumbleWeak) {
-        status = Context->Transport->SendOutputReport(Context, report, sizeof(report));
-        if (NT_SUCCESS(status)) {
-            Context->RumbleStrong = Strong;
-            Context->RumbleWeak = Weak;
-        }
+    if (Strong == Context->RumbleStrong && Weak == Context->RumbleWeak) {
+        ReleaseSRWLockExclusive(&Context->RumbleLock);
+        return;
+    }
+    status = Context->Transport->SendOutputReport(Context, report, sizeof(report));
+    if (NT_SUCCESS(status)) {
+        Context->RumbleStrong = Strong;
+        Context->RumbleWeak = Weak;
     }
     ReleaseSRWLockExclusive(&Context->RumbleLock);
 
