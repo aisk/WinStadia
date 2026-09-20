@@ -107,6 +107,16 @@ EvtBluetoothRetryTimer(WDFTIMER Timer)
     }
 }
 
+// Rumble does not work this way yet. The driver below fails the write with
+// 0xC0070057 (invalid parameter), as it does for HidD_SetOutputReport on the
+// plain inbox stack. The HID class driver accepts the report, so the driver
+// below or the controller's GATT table is at fault; how the table describes
+// the output report's characteristic is the first thing to look at.
+// A way around that has not been tried: enumerate the HID service (0x1812)
+// with the Bluetooth GATT API (BluetoothGATTGetCharacteristics and friends),
+// find the Report characteristic (0x2A4D) whose Report Reference descriptor
+// (0x2908) names this output report, and write to it directly. Apps are denied
+// that service; a driver on its device node should not be.
 static NTSTATUS
 BluetoothSendOutputReport(PDEVICE_CONTEXT Context, PUCHAR Report, size_t Length)
 {

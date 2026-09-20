@@ -1,26 +1,14 @@
 # WinStadia
 
-Makes a Google Stadia controller (with the Bluetooth firmware) show up as an Xbox controller on Windows, over USB and over Bluetooth. It was built for miHoYo games, but since XInput is what PC games expect, pretty much everything benefits. Nothing runs in the background.
+Makes a Google Stadia controller (with the Bluetooth firmware) show up as an Xbox controller on Windows, over USB and Bluetooth. It was built for miHoYo games, which ignore the controller or get its buttons wrong, but anything that speaks XInput benefits.
 
-It is a user-mode driver. There is no kernel code of its own and no need for test signing mode.
-
-## Why
-
-With the Bluetooth firmware the controller is a plain HID gamepad. Windows accepts it, many games do not. Zenless Zone Zero ignores it and Genshin Impact gets the buttons wrong, because they only know Xbox and PlayStation controllers.
-
-The usual way to get XInput is a virtual Xbox controller from a kernel bus driver. Individuals cannot sign kernel drivers, and ViGEmBus, the one everybody used, is no longer maintained.
+It is a UMDF driver. No kernel code, no test signing mode, no background process. The usual route to XInput is a virtual controller from a kernel bus driver, which individuals cannot sign, and ViGEmBus, the one everybody used, is no longer maintained.
 
 ## How it works
 
-Windows already knows how to turn a HID gamepad into an XInput device, because that is what Xbox controllers are over Bluetooth. An inbox filter driver called xinputhid sits on top of their HID stack and does the translation.
+Xbox controllers on Bluetooth are HID gamepads, and the inbox filter driver xinputhid on top of their HID stack turns them into XInput devices. WinStadia is a HID transport minidriver at the bottom of the Stadia controller's HID stack. It presents the IDs, report descriptor and reports of an Xbox One S controller on Bluetooth, and its INF puts xinputhid on top, the way Microsoft's INF does for the real thing. Rumble travels the other way.
 
-WinStadia sits at the bottom of the controller's HID stack. It takes in the Stadia input reports, and towards the HID stack above it looks like an Xbox One S controller on Bluetooth, with the same IDs, report descriptor and report format. Its INF puts xinputhid on top, the same way Microsoft's own INF does for the real thing. From there on Windows treats it like any Xbox controller. Rumble travels the other way.
-
-How the Stadia reports reach the driver depends on the connection. On USB it takes the place of the generic USB HID driver and talks to the endpoints itself, with the inbox WinUSB driver below it carrying the transfers. On Bluetooth the Windows driver for Bluetooth LE HID devices stays in place. WinStadia sits right on top of it and asks it for input reports the way the HID class driver normally would, so it does not have to speak Bluetooth itself.
-
-The driver runs in the system's user-mode driver host. A crash there cannot bluescreen the machine, and Windows restarts the host.
-
-The face buttons carry the same letters in the same places on both controllers, so button prompts in games are right.
+On USB it replaces hidusb and talks to the interrupt endpoints through WinUSB. On Bluetooth it sits on top of the inbox HID over GATT driver and reads input reports from it the way the HID class driver would.
 
 | Stadia | Xbox |
 |---|---|
@@ -33,37 +21,32 @@ The face buttons carry the same letters in the same places on both controllers, 
 | Stadia | Xbox button |
 | Capture, Assistant | unmapped |
 
-## Trade-offs
+## Limits
 
-**It leans on undocumented behavior.** xinputhid is meant for Microsoft's own controllers and nothing documents the reports it expects. WinStadia copies what a real controller sends. A Windows update could change the rules.
-
-**No rumble over Bluetooth.** Everything else works there, rumble needs the cable. The controller declares its rumble output report over Bluetooth too and the HID class driver accepts it, but the Windows Bluetooth LE HID driver below refuses to write it and fails the request as an invalid parameter. That happens with the plain Windows stack as well, and SDL lists the same limitation. Why that driver refuses is not known. A likely place to look is how the controller describes the report's characteristic in its GATT table. Apps cannot go around the driver, because Windows keeps the HID service of a Bluetooth LE device to itself. A driver on that service is not locked out, so a possible way forward is to have WinStadia find the characteristic of the output report and write to it through the Bluetooth GATT API, leaving input with the Windows driver. That is untested.
-
-**The Stadia controller disappears for everything else.** Steam Input, the browser Gamepad API and any software with native Stadia support will see an Xbox controller instead. That includes Google's web tool for switching firmware, so uninstall first if you ever need it.
-
-**Two buttons are lost.** XInput has no place for Capture and Assistant.
-
-**The driver is signed on your machine, by your machine.** Windows only installs driver packages signed by someone the machine trusts, and a signature Microsoft accepts is out of reach for a project like this. So the installer makes a code signing certificate on the spot, has the machine trust it, signs the package and deletes the private key right away. What stays behind is a trusted certificate nobody can sign anything with anymore, and uninstalling removes that too. Nothing is signed by the author, so no key of somebody else's has to be trusted. The downloads are built by GitHub Actions from the tagged commit and carry a build attestation, check it with `gh attestation verify WinStadia.zip --repo aisk/WinStadia`.
-
-**Anti-cheat.** There is no kernel code, no injection and no modified game files. Games see what they would see with a real Xbox controller. That is an observation and not a guarantee.
-
-**Limits.** 64-bit Windows 11 only.
+- The report format xinputhid expects is undocumented. WinStadia copies a real controller, and a Windows update could break that.
+- No rumble over Bluetooth, use the cable. The inbox HID over GATT driver rejects the controller's output report as an invalid parameter, with or without WinStadia.
+- Everything sees an Xbox controller, including Steam Input, browsers and Google's web tool for switching firmware. Uninstall before using that.
+- Capture and Assistant have no counterpart in XInput.
+- Games see an ordinary Xbox controller, with no kernel code or injection involved. What anti-cheat makes of it is still not guaranteed.
+- 64-bit Windows 11 only.
 
 ## Install
 
-Download `WinStadia.zip` from the [releases](https://github.com/aisk/WinStadia/releases), unpack it and run the installer from the unpacked folder.
+Download `WinStadia.zip` from the [releases](https://github.com/aisk/WinStadia/releases), unpack it and run the installer.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-The installer elevates itself and no reboot is needed. A connected controller switches over right away, unless a game or some other program is holding it open. The installer says so. Replugging the controller finishes the job then, or over Bluetooth switching Bluetooth off and on. A controller that gets plugged in or paired later picks the driver up by itself.
+It elevates itself and needs no reboot. The package is signed during the install, with a certificate made on the spot that only this machine trusts and whose private key is deleted right after. If something holds the controller open, the driver cannot take over. Replug the controller then, or over Bluetooth switch Bluetooth off and on.
 
-`install.ps1 -Uninstall` hands the controller back to the Windows HID driver and removes the certificate trust.
+`install.ps1 -Uninstall` brings back the inbox drivers and removes the certificate.
+
+Releases are built by GitHub Actions, which `gh attestation verify WinStadia.zip --repo aisk/WinStadia` confirms.
 
 ## Build
 
-You need the Visual Studio C++ build tools and Windows SDK 10.0.26100. The WDK is not required, the build script downloads the NuGet WDK (about 110 MB) into `.wdk` on first run.
+Needs the Visual Studio C++ build tools and Windows SDK 10.0.26100. The build script fetches the NuGet WDK (about 110 MB) into `.wdk` on first run.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File driver\build.ps1
@@ -72,14 +55,9 @@ powershell -ExecutionPolicy Bypass -File driver\install.ps1
 
 ## Troubleshooting
 
-The driver keeps no log. A script asks it instead, `status.ps1` next to the installer, or in `driver` in a checkout. It needs the controller connected, because without it there is no driver instance to ask.
+`status.ps1` sits next to the installer, in `driver` in a checkout. It reads the driver's state through a vendor feature report. That covers whether input arrives, whether the last rumble write failed and the last NTSTATUS from the side facing the controller. With `-Watch` it prints the raw Stadia input reports. The controller has to be connected.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File status.ps1          # what is the driver doing
-powershell -ExecutionPolicy Bypass -File status.ps1 -Watch   # print raw Stadia input reports
-```
-
-The status tells whether input reports arrive from the controller, whether the last rumble write failed, and the last error code the side facing the controller ran into. To make it rumble, use any game or gamepad tester. Windows only lets rumble through by way of XInput.
+Rumble can only be tested through XInput, because xinputhid blocks HID output writes from above.
 
 ## License
 
