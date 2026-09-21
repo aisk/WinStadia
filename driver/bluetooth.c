@@ -109,14 +109,31 @@ EvtBluetoothRetryTimer(WDFTIMER Timer)
 
 // Rumble does not work this way yet. The driver below fails the write with
 // 0xC0070057 (invalid parameter), as it does for HidD_SetOutputReport on the
-// plain inbox stack. The HID class driver accepts the report, so the driver
-// below or the controller's GATT table is at fault; how the table describes
-// the output report's characteristic is the first thing to look at.
-// A way around that has not been tried: enumerate the HID service (0x1812)
-// with the Bluetooth GATT API (BluetoothGATTGetCharacteristics and friends),
-// find the Report characteristic (0x2A4D) whose Report Reference descriptor
-// (0x2908) names this output report, and write to it directly. Apps are denied
-// that service; a driver on its device node should not be.
+// plain inbox stack. The likely reason is in the controller's GATT table: the
+// output report's characteristic (0x2A4D, value handle 0x0044) is declared
+// with Read and Write only, where the HID over GATT profile demands Write
+// Without Response as well. Protocol Mode and the control point lack it too.
+//
+// Writing the characteristic with the Bluetooth GATT API
+// (BluetoothGATTSetCharacteristicValue) was tried and is closed off:
+// - The API needs a handle of the service. All it does with the handle is
+//   fetch 16 bytes that stand for that open (IOCTL 0x00411490); reads and
+//   writes then go to bthserv over RPC. The handle of the whole device lists
+//   the table but fails every read and write with ERROR_INVALID_FUNCTION.
+// - The service's device interface cannot be opened: the create ends at the
+//   HID class driver on top of this stack (error 31).
+// - From inside the driver host, WdfIoTargetOpen by file either fails with
+//   access denied, or, with UmdfDispatcher=FileHandle, succeeds without
+//   giving a handle, and the IOCTL above then fails with STATUS_FILE_CLOSED.
+//   A filter as lowest driver of the stack gets the same. BthLEEnum seems to
+//   refuse user mode opens of protected services, as it does for 0x1800 and
+//   0x1801 (error 5). The reflector's control devices (\\.\UMDFCtrlDev-*)
+//   refuse a CreateFile from the host as well.
+// What is left is what the driver below uses itself: the WinRT class
+// Microsoft.Bluetooth.Profiles.Gatt.Interface.GattClientDevice, served by
+// bthserv, with GattClientCharacteristic and GattClientWriteResult next to
+// it. It is private, without metadata, so its interfaces would have to be
+// recovered from the inbox driver.
 static NTSTATUS
 BluetoothSendOutputReport(PDEVICE_CONTEXT Context, PUCHAR Report, size_t Length)
 {
