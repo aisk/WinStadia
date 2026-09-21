@@ -70,7 +70,7 @@ function Open-Pad {
     throw 'WinStadia controller not found, is the controller connected and the driver installed?'
 }
 
-# Status report: [1] last rumble write failed, [2..6] last error NTSTATUS
+# Status report: [1] last rumble write failed, [2..5] last error NTSTATUS
 # (little endian), [6] length of the last raw Stadia input report, [7..] that
 # report.
 function Read-Status($handle) {

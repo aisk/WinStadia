@@ -388,7 +388,7 @@ GetFeature(PDEVICE_CONTEXT Context, WDFREQUEST Request)
         return STATUS_INVALID_PARAMETER;
     }
 
-    // [1] rumble failed, [2..6] last error NTSTATUS (LE), [6] length of the
+    // [1] rumble failed, [2..5] last error NTSTATUS (LE), [6] length of the
     // last raw Stadia input report, [7..] that report
     AcquireSRWLockShared(&Context->Lock);
     report[1] = Context->RumbleFailed;
