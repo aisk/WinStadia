@@ -129,6 +129,13 @@ EvtBluetoothRetryTimer(WDFTIMER Timer)
 //   refuse user mode opens of protected services, as it does for 0x1800 and
 //   0x1801 (error 5). The reflector's control devices (\\.\UMDFCtrlDev-*)
 //   refuse a CreateFile from the host as well.
+// The public WinRT API (Windows.Devices.Bluetooth.GenericAttributeProfile,
+// what bleak and Web Bluetooth use) is closed off as well: GetGattServices
+// lists 0x1812, but RequestAccess on it returns DeniedBySystem and
+// GetCharacteristics returns AccessDenied, offline and connected alike,
+// while the other services are allowed. Reports of a plain GATT write
+// making the motors run come from macOS and Linux, whose stacks let user
+// mode at the HID service.
 // What is left is what the driver below uses itself: the WinRT class
 // Microsoft.Bluetooth.Profiles.Gatt.Interface.GattClientDevice, served by
 // bthserv, with GattClientCharacteristic and GattClientWriteResult next to
