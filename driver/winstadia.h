@@ -35,6 +35,8 @@ typedef struct _TRANSPORT {
     VOID (*Stop)(PDEVICE_CONTEXT Context);
     // The report starts with its ID. May block; the caller holds RumbleLock.
     NTSTATUS (*SendOutputReport)(PDEVICE_CONTEXT Context, PUCHAR Report, size_t Length);
+    // Runs the recovery from a failed input reader; NULL where there is none.
+    NTSTATUS (*TestRecovery)(PDEVICE_CONTEXT Context);
 } TRANSPORT;
 
 extern const TRANSPORT UsbTransport;
@@ -66,6 +68,13 @@ struct _DEVICE_CONTEXT {
     BOOLEAN RumbleFailed;
     NTSTATUS LastError;
     ULONG RumbleWrites;
+    // Every input report from the transport, changed or not.
+    ULONG InputReports;
+    // USB input reader failures and what was done about them.
+    USBD_STATUS LastUsbdStatus;
+    ULONG ReaderFailures;
+    ULONG PipeResets;
+    ULONG DeviceRestarts;
 
     // Motor speeds: those asked for and those the controller has, both
     // guarded by the lock. The work item writes the difference, so that a
@@ -85,6 +94,11 @@ struct _DEVICE_CONTEXT {
     // then go through the control endpoint.
     WDFUSBPIPE OutputPipe;
     UCHAR InterfaceNumber;
+    // Brings the input pipe back after the reader failed. Running is guarded
+    // by the lock, the tick of the last recovery belongs to the work item.
+    WDFWORKITEM RecoveryWorkItem;
+    BOOLEAN UsbRunning;
+    ULONGLONG LastRecoveryTick;
 
     // Bluetooth transport.
     WDFIOTARGET LowerDriver;
@@ -104,6 +118,9 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, GetDeviceContext)
 
 // Publishes new control values as input reports, if they changed.
 VOID PadPublishControls(PDEVICE_CONTEXT Context, const UCHAR *Controls);
+// Publishes all controls released and centered, for when input stops
+// arriving, so that games do not keep the last buttons held.
+VOID PadReleaseControls(PDEVICE_CONTEXT Context);
 
 EVT_WDF_DEVICE_PREPARE_HARDWARE StadiaPrepareHardware;
 EVT_WDF_DEVICE_D0_ENTRY StadiaD0Entry;

@@ -26,6 +26,12 @@
 #define MAX_INPUT_REPORT_LEN GAMEPAD_REPORT_LEN
 #define STATUS_REPORT_LEN 64
 #define STATUS_RUMBLE_WRITES_INDEX (7 + RAW_REPORT_MAX)
+#define STATUS_USBD_STATUS_INDEX (STATUS_RUMBLE_WRITES_INDEX + 4)
+#define STATUS_READER_FAILURES_INDEX (STATUS_USBD_STATUS_INDEX + 4)
+#define STATUS_PIPE_RESETS_INDEX (STATUS_READER_FAILURES_INDEX + 4)
+#define STATUS_DEVICE_RESTARTS_INDEX (STATUS_PIPE_RESETS_INDEX + 4)
+#define STATUS_INPUT_REPORTS_INDEX (STATUS_DEVICE_RESTARTS_INDEX + 4)
+#define STATUS_COMMAND_TEST_RECOVERY 0x01
 
 // Rumble output report: [1] motor enable mask, [2] left trigger, [3] right
 // trigger, [4] strong, [5] weak, each 0..100, [6..9] timing, which the Stadia
@@ -313,6 +319,12 @@ PadPublishControls(PDEVICE_CONTEXT Context, const UCHAR *Controls)
     ReleaseSRWLockExclusive(&Context->Lock);
 }
 
+VOID
+PadReleaseControls(PDEVICE_CONTEXT Context)
+{
+    PadPublishControls(Context, IdleControls);
+}
+
 static NTSTATUS
 ReadReport(PDEVICE_CONTEXT Context, WDFREQUEST Request, BOOLEAN *Complete)
 {
@@ -391,15 +403,47 @@ GetFeature(PDEVICE_CONTEXT Context, WDFREQUEST Request)
 
     // [1] rumble failed, [2..5] last error NTSTATUS (LE), [6] length of the
     // last raw Stadia input report, [7..22] that report, [23..26] rumble
-    // writes that reached the controller (LE)
+    // writes that reached the controller, [27..30] USBD status of the last
+    // reader failure, [31..34] reader failures, [35..38] pipe resets,
+    // [39..42] device restarts asked for, [43..46] input reports received
+    // (all LE)
     AcquireSRWLockShared(&Context->Lock);
     report[1] = Context->RumbleFailed;
     RtlCopyMemory(report + 2, &Context->LastError, sizeof(NTSTATUS));
     report[6] = Context->RawReportLength;
     RtlCopyMemory(report + 7, Context->RawReport, Context->RawReportLength);
     RtlCopyMemory(report + STATUS_RUMBLE_WRITES_INDEX, &Context->RumbleWrites, sizeof(ULONG));
+    RtlCopyMemory(report + STATUS_USBD_STATUS_INDEX, &Context->LastUsbdStatus, sizeof(USBD_STATUS));
+    RtlCopyMemory(report + STATUS_READER_FAILURES_INDEX, &Context->ReaderFailures, sizeof(ULONG));
+    RtlCopyMemory(report + STATUS_PIPE_RESETS_INDEX, &Context->PipeResets, sizeof(ULONG));
+    RtlCopyMemory(report + STATUS_DEVICE_RESTARTS_INDEX, &Context->DeviceRestarts, sizeof(ULONG));
+    RtlCopyMemory(report + STATUS_INPUT_REPORTS_INDEX, &Context->InputReports, sizeof(ULONG));
     ReleaseSRWLockShared(&Context->Lock);
     return CopyToRequest(Request, report, sizeof(report));
+}
+
+// Setting the status report runs a command, [1]: 1 = go through the recovery
+// from a failed input reader, as status.ps1 -TestRecovery does.
+static NTSTATUS
+SetFeature(PDEVICE_CONTEXT Context, WDFREQUEST Request)
+{
+    PUCHAR report;
+    size_t length;
+    NTSTATUS status = GetInputBuffer(Request, 2, &report, &length);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    if (report[0] != REPORT_ID_STATUS || report[1] != STATUS_COMMAND_TEST_RECOVERY) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (Context->Transport->TestRecovery == NULL) {
+        return STATUS_NOT_SUPPORTED;
+    }
+    status = Context->Transport->TestRecovery(Context);
+    if (NT_SUCCESS(status)) {
+        WdfRequestSetInformation(Request, length);
+    }
+    return status;
 }
 
 static NTSTATUS
@@ -465,6 +509,9 @@ EvtIoDeviceControl(
         break;
     case IOCTL_UMDF_HID_GET_FEATURE:
         status = GetFeature(context, Request);
+        break;
+    case IOCTL_UMDF_HID_SET_FEATURE:
+        status = SetFeature(context, Request);
         break;
     case IOCTL_UMDF_HID_GET_INPUT_REPORT:
         status = GetInputReport(context, Request);

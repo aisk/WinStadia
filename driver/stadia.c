@@ -101,6 +101,7 @@ StadiaInputReport(PDEVICE_CONTEXT Context, const UCHAR *Report, size_t Length)
     UCHAR controls[PAD_CONTROLS_LEN];
 
     AcquireSRWLockExclusive(&Context->Lock);
+    Context->InputReports++;
     Context->RawReportLength = (UCHAR)min(Length, RAW_REPORT_MAX);
     RtlCopyMemory(Context->RawReport, Report, Context->RawReportLength);
     ReleaseSRWLockExclusive(&Context->Lock);

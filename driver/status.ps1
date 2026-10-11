@@ -1,7 +1,8 @@
 # Asks the driver what it is doing, through the status feature report of the
 # controller it presents. With -Watch it keeps printing the raw Stadia input
-# reports as they change, until Ctrl+C.
-param([switch]$Watch)
+# reports as they change, until Ctrl+C. With -TestRecovery it first has the
+# driver go through the recovery from a failed USB input reader.
+param([switch]$Watch, [switch]$TestRecovery)
 
 $ErrorActionPreference = 'Stop'
 
@@ -27,6 +28,8 @@ public static class WinStadiaHid {
     public static extern bool HidD_GetSerialNumberString(IntPtr handle, StringBuilder buffer, int length);
     [DllImport("hid.dll", SetLastError = true)]
     public static extern bool HidD_GetFeature(IntPtr handle, byte[] report, int length);
+    [DllImport("hid.dll", SetLastError = true)]
+    public static extern bool HidD_SetFeature(IntPtr handle, byte[] report, int length);
     [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
     public static extern int CM_Get_Device_Interface_List_SizeW(out uint length, ref Guid guid, string id, uint flags);
     [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
@@ -72,7 +75,10 @@ function Open-Pad {
 
 # Status report: [1] last rumble write failed, [2..5] last error NTSTATUS
 # (little endian), [6] length of the last raw Stadia input report, [7..22]
-# that report, [23..26] rumble writes that reached the controller.
+# that report, [23..26] rumble writes that reached the controller, [27..30]
+# USBD status of the last USB reader failure, [31..34] reader failures,
+# [35..38] pipe resets, [39..42] device restarts, [43..46] input reports
+# received (all little endian).
 function Read-Status($handle) {
     $report = New-Object byte[] $statusReportLength
     $report[0] = $statusReportId
@@ -81,21 +87,42 @@ function Read-Status($handle) {
     }
     $raw = if ($report[6] -gt 0) { $report[7..(6 + $report[6])] } else { @() }
     [pscustomobject]@{
-        RumbleFailed = $report[1] -ne 0
-        Error        = [BitConverter]::ToUInt32($report, 2)
-        RawReport    = ($raw | ForEach-Object { $_.ToString('X2') }) -join ' '
-        RumbleWrites = [BitConverter]::ToUInt32($report, 23)
+        RumbleFailed   = $report[1] -ne 0
+        Error          = [BitConverter]::ToUInt32($report, 2)
+        RawReport      = ($raw | ForEach-Object { $_.ToString('X2') }) -join ' '
+        RumbleWrites   = [BitConverter]::ToUInt32($report, 23)
+        UsbdStatus     = [BitConverter]::ToUInt32($report, 27)
+        ReaderFailures = [BitConverter]::ToUInt32($report, 31)
+        PipeResets     = [BitConverter]::ToUInt32($report, 35)
+        DeviceRestarts = [BitConverter]::ToUInt32($report, 39)
+        InputReports   = [BitConverter]::ToUInt32($report, 43)
     }
 }
 
 $pad = Open-Pad
 try {
+    if ($TestRecovery) {
+        $command = New-Object byte[] $statusReportLength
+        $command[0] = $statusReportId
+        $command[1] = 1
+        if (-not [WinStadiaHid]::HidD_SetFeature($pad, $command, $command.Length)) {
+            throw "starting the recovery failed, error $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+        }
+        'Recovery started.'
+        Start-Sleep -Milliseconds 500
+    }
+
     $status = Read-Status $pad
     $text = if ($status.RawReport) { 'running, receiving input' } else { 'running, no input received yet' }
     if ($status.RumbleFailed) { $text += ', last rumble write failed' }
     if ($status.Error) { $text += ', last error 0x{0:X8}' -f $status.Error }
     "Driver: $text"
     "Rumble writes: $($status.RumbleWrites)"
+    "Input reports: $($status.InputReports)"
+    if ($status.ReaderFailures) {
+        "USB reader failures: $($status.ReaderFailures), last USBD status 0x{0:X8}" -f $status.UsbdStatus
+        "Recovered by pipe resets: $($status.PipeResets), device restarts: $($status.DeviceRestarts)"
+    }
 
     if ($Watch) {
         'Raw input reports, press Ctrl+C to stop.'

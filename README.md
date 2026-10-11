@@ -55,7 +55,7 @@ powershell -ExecutionPolicy Bypass -File driver\install.ps1
 
 ## Troubleshooting
 
-`status.ps1` sits next to the installer, in `driver` in a checkout. It reads the driver's state through a vendor feature report. That covers whether input arrives, whether the last rumble write failed and the last NTSTATUS from the side facing the controller. With `-Watch` it prints the raw Stadia input reports. The controller has to be connected.
+`status.ps1` sits next to the installer, in `driver` in a checkout. It reads the driver's state through a vendor feature report. That covers whether input arrives, whether the last rumble write failed and the last NTSTATUS from the side facing the controller, and over USB how often the input reader failed and how the driver recovered. With `-Watch` it prints the raw Stadia input reports, with `-TestRecovery` it has the driver go through that recovery first. The controller has to be connected.
 
 Rumble can only be tested through XInput, because xinputhid blocks HID output writes from above.
 

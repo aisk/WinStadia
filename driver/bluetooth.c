@@ -330,4 +330,5 @@ const TRANSPORT BluetoothTransport = {
     BluetoothStart,
     BluetoothStop,
     BluetoothSendOutputReport,
+    NULL,
 };
