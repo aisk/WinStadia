@@ -282,7 +282,6 @@ BluetoothPrepareHardware(WDFDEVICE Device)
 static NTSTATUS
 BluetoothStart(PDEVICE_CONTEXT Context)
 {
-    HRESULT hr;
     NTSTATUS status = WdfIoTargetStart(Context->LowerDriver);
     if (!NT_SUCCESS(status)) {
         return status;
@@ -295,16 +294,14 @@ BluetoothStart(PDEVICE_CONTEXT Context)
         SendRead(&Context->Readers[i]);
     }
 
-    // Now, so that the first rumble of a game does not wait for it. Should it
-    // fail, as it may right after the controller connected, the writes try
-    // again.
+    // Do not open the private GATT client from the D0 entry callback. Opening
+    // it involves several blocking waits and the HID service below is still
+    // starting. Input must not depend on that undocumented interface. The
+    // first rumble work item opens the session through SendOutputReport.
+    // Reset the backoff so an earlier power cycle cannot delay that attempt.
     AcquireSRWLockExclusive(&Context->RumbleLock);
     Context->GattOpenTick = 0;
-    hr = OpenGattSession(Context);
     ReleaseSRWLockExclusive(&Context->RumbleLock);
-    if (FAILED(hr)) {
-        StadiaRecordError(Context, (NTSTATUS)hr);
-    }
     return STATUS_SUCCESS;
 }
 
