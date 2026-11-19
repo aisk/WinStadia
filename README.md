@@ -57,7 +57,9 @@ powershell -ExecutionPolicy Bypass -File driver\install.ps1
 
 `status.ps1` sits next to the installer, in `driver` in a checkout. It reads the driver's state through a vendor feature report. That covers whether input arrives, whether the last rumble write failed and the last NTSTATUS from the side facing the controller. With `-Watch` it prints the raw Stadia input reports. The controller has to be connected.
 
-Rumble can only be tested through XInput, because xinputhid blocks HID output writes from above.
+Rumble can only be tested through XInput, because xinputhid blocks HID output writes from above. Bluetooth opens the private GATT session lazily on the first rumble request, not during device startup; that first request may take longer.
+
+For repeated Bluetooth connect/disconnect notifications, first verify stable input without rumble, then test output separately. See [Bluetooth diagnostics](docs/bluetooth-diagnostics.md) for a controlled comparison and the unverified build 26300 report. A successful install alone does not establish runtime compatibility.
 
 ## License
 
